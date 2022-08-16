@@ -6,9 +6,6 @@ authors = ["xvanc <xvancm@gmail.com>"]
 publish = false
 license = "BSD-3-Clause"
 
-[profile.dev]
-opt-level = 1
-
 [dependencies]
 bitflags = "*"
 bolt-libelf = { git = "https://github.com/bolt-os/libelf" }
