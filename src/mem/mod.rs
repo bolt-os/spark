@@ -36,8 +36,12 @@ macro_rules! pages_for {
     ($size:expr) => {
         ($size as usize + $crate::vmm::PAGE_SIZE - 1) / $crate::vmm::PAGE_SIZE
     };
-    (type $t:ty) => {
-        pages_for!(::core::mem::size_of::<$t>())
+    ($size:expr, $page_size:expr) => {{
+        let page_size = $page_size;
+        ($size as usize + (page_size - 1)) / page_size
+    }};
+    (type $t:ty $(, $page_size:expr)?) => {
+        pages_for!(::core::mem::size_of::<$t>() $(, $page_size)?)
     };
 }
 

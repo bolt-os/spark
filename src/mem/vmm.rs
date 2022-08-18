@@ -105,6 +105,8 @@ fn allocate_page_table() -> usize {
 pub enum MapError {
     /// The requested mapping overlaps with an existing mapping in the address space
     OverlappingMappings,
+    /// A physical or virtual address was not aligned to the relevant page size
+    MisalignedAddr,
 }
 
 pub fn invalidate_page(vaddr: usize, asid: u16) {
@@ -164,17 +166,28 @@ impl AddressSpace {
         size: usize,
         flag: MapFlags,
     ) -> Result<(), MapError> {
-        assert!(virt & 0xfff == 0);
-        assert!(phys & 0xfff == 0);
+        debug_assert!(
+            (flag & (MapFlags::HUGE2M | MapFlags::HUGE1G))
+                .bits()
+                .count_ones()
+                < 2
+        );
+        let page_size = flag.page_size();
 
-        // round up to a whole number of pages
-        let npgs = pages_for!(size);
+        // Make sure the addresses are aligned to the requested page size
+        if !pow2_is_aligned(virt, page_size) || !pow2_is_aligned(phys, page_size) {
+            return Err(MapError::MisalignedAddr);
+        }
 
-        self.insert_mapping(Mapping { virt, npgs })?;
+        // Add to the list of mappings. This will fail if it overlaps with an existing one.
+        self.insert_mapping(Mapping {
+            virt,
+            npgs: pages_for!(size),
+        })?;
 
         // Map each page
-        for i in 0..npgs {
-            self.map_page(virt + PAGE_SIZE * i, phys + PAGE_SIZE * i, flag);
+        for i in 0..pages_for!(size, page_size) {
+            self.map_page(virt + page_size * i, phys + page_size * i, flag);
         }
 
         Ok(())
@@ -191,7 +204,7 @@ impl AddressSpace {
             let index = virt >> (12 + 9 * x) & 0x1ff;
             let entry = &mut table.entries[index];
 
-            if x == 0 {
+            if x == flag.map_level() {
                 assert!(!entry.is_present());
                 assert!(!entry.is_mapped());
                 entry.set_address(phys);
@@ -212,6 +225,11 @@ impl AddressSpace {
     }
 }
 
+pub const fn pow2_is_aligned(addr: usize, align: usize) -> bool {
+    debug_assert!(align.is_power_of_two());
+    addr & (align - 1) == 0
+}
+
 bitflags::bitflags! {
     pub struct MapFlags : u32 {
         const READ  = 1 << 0;
@@ -219,7 +237,32 @@ bitflags::bitflags! {
         const EXEC  = 1 << 2;
         const USER  = 1 << 3;
 
+        const HUGE2M = 1 << 4;
+        const HUGE1G = 1 << 5;
+
         const RWX   = Self::READ.bits | Self::WRITE.bits | Self::EXEC.bits;
+    }
+}
+
+impl MapFlags {
+    fn map_level(&self) -> usize {
+        if self.contains(MapFlags::HUGE1G) {
+            2
+        } else if self.contains(MapFlags::HUGE2M) {
+            1
+        } else {
+            0
+        }
+    }
+
+    fn page_size(&self) -> usize {
+        if self.contains(MapFlags::HUGE1G) {
+            0x40000000
+        } else if self.contains(MapFlags::HUGE2M) {
+            0x200000
+        } else {
+            0x1000
+        }
     }
 }
 
@@ -358,10 +401,10 @@ pub fn init_from_fdt(fdt: &fdt::Fdt, hartid: usize) -> AddressSpace {
     println!("Initializing {:?} paging.", vmspace.paging_mode());
 
     vmspace
-        .map_pages(0, 0, pmap_size, MapFlags::RWX)
+        .map_pages(0, 0, pmap_size, MapFlags::RWX | MapFlags::HUGE1G)
         .expect("failed to create identity map");
     vmspace
-        .map_pages(hhdm_base, 0, pmap_size, MapFlags::RWX)
+        .map_pages(hhdm_base, 0, pmap_size, MapFlags::RWX | MapFlags::HUGE1G)
         .expect("failed to create higher-half map");
 
     unsafe { vmspace.switch_to() };

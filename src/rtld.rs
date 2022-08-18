@@ -194,6 +194,7 @@ pub fn load_object<'elf>(
             )
             .map_err(|err| match err {
                 MapError::OverlappingMappings => LoadError::OverlappingSegments,
+                MapError::MisalignedAddr => unreachable!(),
             })?;
     }
 
