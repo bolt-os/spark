@@ -39,13 +39,11 @@ unsafe impl GlobalAlloc for BadButGoodEnoughAllocator {
         assert!(layout.align() <= PAGE_SIZE);
 
         let num_frames = pages_for!(layout.size());
-        pmm::alloc_frames(num_frames)
-            .map(|addr| {
-                let ptr = addr as *mut u8;
-                ptr.write_bytes(0, num_frames * PAGE_SIZE);
-                ptr
-            })
-            .unwrap_or_else(ptr::null_mut)
+        pmm::alloc_frames(num_frames).map_or_else(ptr::null_mut, |addr| {
+            let ptr = addr as *mut u8;
+            ptr.write_bytes(0, num_frames * PAGE_SIZE);
+            ptr
+        })
     }
 
     unsafe fn realloc(
@@ -67,14 +65,12 @@ unsafe impl GlobalAlloc for BadButGoodEnoughAllocator {
 
                 ptr
             }
-            Ordering::Greater => pmm::alloc_frames(new_frames)
-                .map(|addr| {
-                    let new_ptr = addr as *mut u8;
-                    new_ptr.copy_from(ptr, layout.size());
-                    pmm::free_frames(ptr as usize, old_frames);
-                    new_ptr
-                })
-                .unwrap_or_else(ptr::null_mut),
+            Ordering::Greater => pmm::alloc_frames(new_frames).map_or_else(ptr::null_mut, |addr| {
+                let new_ptr = addr as *mut u8;
+                new_ptr.copy_from(ptr, layout.size());
+                pmm::free_frames(ptr as usize, old_frames);
+                new_ptr
+            }),
         }
     }
 
