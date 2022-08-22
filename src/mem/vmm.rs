@@ -30,7 +30,7 @@
 
 use crate::{pages_for, pmm, pmm::MAX_PHYS_ADDR};
 use alloc::collections::LinkedList;
-use core::{cmp, sync::atomic::Ordering};
+use core::{cmp, ptr, sync::atomic::Ordering};
 
 pub const PAGE_SIZE: usize = 4096;
 
@@ -94,9 +94,11 @@ pub struct AddressSpace {
 /// is zero-initialized. Page tables containing uninitialized entries is not fun.
 fn allocate_page_table() -> usize {
     let paddr = pmm::alloc_frames(1).unwrap();
-    unsafe {
-        (paddr as *mut u8).write_bytes(0, PAGE_SIZE);
-    }
+
+    // New page tables must be zeroed to prevent bogus translations.
+    // SAFETY: `paddr` is valid for `PAGE_SIZE` bytes.
+    unsafe { ptr::write_bytes(paddr as *mut u8, 0, PAGE_SIZE) };
+
     paddr
 }
 
@@ -107,9 +109,12 @@ pub enum MapError {
     OverlappingMappings,
     /// A physical or virtual address was not aligned to the relevant page size
     MisalignedAddr,
+    /// Invalid flags were specified to `map_pages()`
+    InvalidFlags,
 }
 
 pub fn invalidate_page(vaddr: usize, asid: u16) {
+    // SAFETY: It's fine.
     unsafe {
         asm!("sfence.vma {}, {}", in(reg) vaddr, in(reg) asid, options(nostack, preserves_flags));
     }
@@ -117,7 +122,7 @@ pub fn invalidate_page(vaddr: usize, asid: u16) {
 
 impl AddressSpace {
     /// Create a new, empty, virtual address space
-    pub fn new(paging_mode: PagingMode) -> AddressSpace {
+    pub const fn new(paging_mode: PagingMode) -> AddressSpace {
         Self {
             root: 0,
             mode: paging_mode,
@@ -166,12 +171,11 @@ impl AddressSpace {
         size: usize,
         flag: MapFlags,
     ) -> Result<(), MapError> {
-        debug_assert!(
-            (flag & (MapFlags::HUGE2M | MapFlags::HUGE1G))
-                .bits()
-                .count_ones()
-                < 2
-        );
+        // `HUGE2M` and `HUGE1G` are mutually exclusive.
+        if flag.contains(MapFlags::HUGE2M) && flag.contains(MapFlags::HUGE1G) {
+            return Err(MapError::InvalidFlags);
+        }
+
         let page_size = flag.page_size();
 
         // Make sure the addresses are aligned to the requested page size
@@ -198,6 +202,8 @@ impl AddressSpace {
             self.root = allocate_page_table();
         }
 
+        // SAFETY: The address is not null, and was allocated from `allocate_page_table()`
+        // which always returns a valid, empty page table.
         let mut table = unsafe { &mut *(self.root as *mut PageTable) };
 
         for x in (0..self.mode.levels()).rev() {
@@ -218,6 +224,11 @@ impl AddressSpace {
                 entry.set_present(true);
             }
 
+            assert!(!entry.is_mapped());
+
+            // SAFETY: We only ever set the present flag to true when the entry
+            // contains a valid address. We also ensured that this entry points
+            // to another page table, and not a physical frame.
             table = unsafe { &mut *(entry.get_address() as *mut PageTable) };
         }
 
@@ -267,14 +278,17 @@ impl MapFlags {
 }
 
 impl From<elf::SegmentFlags> for MapFlags {
-    fn from(sflg: elf::SegmentFlags) -> Self {
-        let mut mflg = MapFlags::empty();
+    fn from(sgmt_flags: elf::SegmentFlags) -> Self {
+        let mut map_flags = MapFlags::empty();
 
-        mflg.set(MapFlags::READ, sflg.contains(elf::SegmentFlags::READ));
-        mflg.set(MapFlags::WRITE, sflg.contains(elf::SegmentFlags::WRITE));
-        mflg.set(MapFlags::EXEC, sflg.contains(elf::SegmentFlags::EXEC));
+        map_flags.set(MapFlags::READ, sgmt_flags.contains(elf::SegmentFlags::READ));
+        map_flags.set(
+            MapFlags::WRITE,
+            sgmt_flags.contains(elf::SegmentFlags::WRITE),
+        );
+        map_flags.set(MapFlags::EXEC, sgmt_flags.contains(elf::SegmentFlags::EXEC));
 
-        mflg
+        map_flags
     }
 }
 
