@@ -38,7 +38,6 @@ pub const PAGE_SIZE: usize = 4096;
 #[derive(Debug)]
 pub struct Bootinfo {
     pub hart_id: usize,
-    pub dtb_ptr: *mut u8,
     pub free_list: FreeList,
 }
 

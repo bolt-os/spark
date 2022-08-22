@@ -29,7 +29,7 @@
  */
 
 use alloc::ffi::CString;
-use core::ffi::c_char;
+use core::{ffi::c_char, sync::atomic::Ordering};
 use limine::LiminePtr;
 
 use crate::{rtld, vmm};
@@ -258,6 +258,14 @@ pub fn handle_requests(
                     let ptr = leaked as *mut limine::KernelAddress;
                     ptr.with_addr(vmspace.higher_half_start() + ptr.addr())
                 };
+
+                unsafe { req.set_response(LiminePtr::new_unchecked(response)) };
+            }
+            DtbRequest(req) => {
+                let response = leak_to_hhdm(
+                    vmspace,
+                    Box::new(limine::Dtb::new(crate::DTB_PTR.load(Ordering::Relaxed))),
+                );
 
                 unsafe { req.set_response(LiminePtr::new_unchecked(response)) };
             }

@@ -28,6 +28,7 @@
  * SPDX-License-Identifier: BSD-3-Clause
  */
 
+#![doc = include_str!("../README.md")]
 #![no_std]
 #![no_main]
 #![feature(
@@ -41,7 +42,6 @@
     once_cell,                          // https://github.com/rust-lang/rust/issues/74465
     pointer_is_aligned,                 // https://github.com/rust-lang/rust/issues/96284
     strict_provenance,                  // https://github.com/rust-lang/rust/issues/95228
-    sync_unsafe_cell,                   // https://github.com/rust-lang/rust/issues/95439
 )]
 #![reexport_test_harness_main = "test_main"]
 #![test_runner(test::runner)]
@@ -78,7 +78,10 @@ mod test;
 
 pub use mem::{pmm, vmm};
 
-use core::ptr;
+use core::{
+    ptr,
+    sync::atomic::{AtomicPtr, Ordering},
+};
 use spark::Bootinfo;
 
 global_asm!(include_str!("locore.s"), options(raw));
@@ -139,8 +142,12 @@ pub unsafe extern "C" fn _start(hart_id: usize, dtb_ptr: *const u8) {
     }
 }
 
+static DTB_PTR: AtomicPtr<u8> = AtomicPtr::new(ptr::null_mut());
+
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn spark_main(hartid: usize, dtb_ptr: *mut u8) -> ! {
+    DTB_PTR.store(dtb_ptr, Ordering::Relaxed);
+
     let fdt = unsafe { fdt::Fdt::from_ptr(dtb_ptr) }.unwrap();
 
     pmm::init_from_fdt(&fdt, dtb_ptr);
@@ -190,15 +197,10 @@ pub extern "C" fn spark_main(hartid: usize, dtb_ptr: *mut u8) -> ! {
         unsafe { &mut *((vmspace.higher_half_start() + bootinfo) as *mut spark::Bootinfo) };
 
     bootinfo.hart_id = hartid;
-    bootinfo.dtb_ptr = dtb_ptr.wrapping_add(vmspace.higher_half_start());
-
     bootinfo.free_list = unsafe { pmm::handoff() };
 
-    let entry_point = rtld_object
-        .reloc_base
-        .wrapping_add(kernel_elf.entry_point() as usize);
     unsafe {
-        spinup(entry_point, stack_ptr, 0, bootinfo as _, tp);
+        spinup(rtld_object.entry_point(), stack_ptr, 0, bootinfo as _, tp);
     }
 }
 
@@ -269,11 +271,37 @@ fn print_fdt(fdt: &fdt::Fdt) {
 
             print!("{} = ", prop.name);
             match prop.name {
+                "interrupt-map"
+                    if node
+                        .compatible()
+                        .unwrap()
+                        .all()
+                        .any(|c| c == "pci-host-ecam-generic") =>
+                {
+                    let mut chunks = prop
+                        .value
+                        .chunks_exact(4)
+                        .map(|c| u32::from_be_bytes(c.try_into().unwrap()));
+                    println!("[");
+                    while let Some(x) = chunks.next() {
+                        let _y = chunks.next().unwrap();
+                        let _z = chunks.next().unwrap();
+                        let intn = chunks.next().unwrap();
+                        let ctrl = chunks.next().unwrap();
+                        let cintr = chunks.next().unwrap();
+
+                        let bus = (x >> 16) & 0xff;
+                        let dev = (x >> 11) & 0x1f;
+                        let func = (x >> 8) & 0x7;
+
+                        println!("  {bus:02x}:{dev:02x}:{func:02x} INT{} on controller {ctrl:#x}, vector {cintr}", (b'A' - 1 + intn as u8) as char);
+                    }
+                }
                 "compatible" => {
-                    println!("{:?}", node.compatible().unwrap().all().collect::<Vec<_>>())
+                    println!("{:?}", node.compatible().unwrap().all().collect::<Vec<_>>());
                 }
                 "stdout-path" | "riscv,isa" | "status" | "mmu-type" | "model" | "device_type" => {
-                    println!("{}", prop.as_str().unwrap())
+                    println!("{}", prop.as_str().unwrap());
                 }
                 _ => {
                     print!("[");
