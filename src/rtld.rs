@@ -32,7 +32,7 @@ use crate::{
     page_align_down, page_align_up, pages_for, pmm, size_of,
     vmm::{AddressSpace, MapError},
 };
-use core::{cell::OnceCell, cmp};
+use core::{cell::OnceCell, cmp, mem::size_of};
 use elf::{DynTag, Elf, Rela, RelocKind, SegmentKind};
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -40,6 +40,7 @@ pub enum LoadError {
     LowerHalfSegment,
     OverlappingSegments,
     NoSegments,
+    TruncatedSegment,
 }
 
 pub struct Rtld<'elf> {
@@ -75,6 +76,19 @@ impl<'elf> Rtld<'elf> {
 
     fn reloc_addr(&self, addr: usize) -> usize {
         self.reloc_base.wrapping_add(addr)
+    }
+
+    pub fn check_image_ptr<T>(&self, ptr: *const T) -> bool {
+        let obj_start = ptr.addr();
+        let obj_end = obj_start + size_of::<T>();
+        let img_start = self.image_base;
+        let img_end = img_start + self.image_size;
+
+        img_start <= obj_start && obj_end <= img_end
+    }
+
+    pub fn entry_point(&self) -> usize {
+        self.reloc_addr(self.object.entry_point() as _)
     }
 
     pub fn relocation_table(&self) -> Option<&'elf [Rela]> {
@@ -134,19 +148,14 @@ pub fn load_object<'elf>(
     elf: &'elf Elf,
     vmspace: &mut AddressSpace,
 ) -> Result<Rtld<'elf>, LoadError> {
-    let load_headers = elf
-        .segments()
-        .filter(|sgmt| sgmt.kind() == SegmentKind::Load)
-        .collect::<Vec<_>>();
-
-    if load_headers.is_empty() {
-        return Err(LoadError::NoSegments);
-    }
-
+    let mut load_headers = vec![];
     let mut link_base = usize::MAX;
     let mut link_end = usize::MIN;
 
-    for sgmt in load_headers.iter() {
+    for sgmt in elf
+        .segments()
+        .filter(|sgmt| sgmt.kind() == SegmentKind::Load)
+    {
         let sgmt_start = sgmt.virtual_address() as usize;
         let sgmt_end = sgmt.virtual_address() as usize + sgmt.mem_size();
 
@@ -154,8 +163,18 @@ pub fn load_object<'elf>(
             return Err(LoadError::LowerHalfSegment);
         }
 
+        if sgmt.file_size() > sgmt.mem_size() {
+            return Err(LoadError::TruncatedSegment);
+        }
+
         link_base = cmp::min(link_base, sgmt_start);
         link_end = cmp::max(link_end, sgmt_end);
+
+        load_headers.push(sgmt);
+    }
+
+    if load_headers.is_empty() {
+        return Err(LoadError::NoSegments);
     }
 
     // Now that we know where the object linked to and how big it is, we can allocate
@@ -194,7 +213,8 @@ pub fn load_object<'elf>(
             )
             .map_err(|err| match err {
                 MapError::OverlappingMappings => LoadError::OverlappingSegments,
-                MapError::MisalignedAddr => unreachable!(),
+                MapError::InvalidFlags => panic!("this shouldn't happen"),
+                MapError::MisalignedAddr => unreachable!(), /* they damn well better be aligned */
             })?;
     }
 
