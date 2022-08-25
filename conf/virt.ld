@@ -10,18 +10,17 @@ SECTIONS {
     }
     PROVIDE(__etext = .);
     .rodata             : { *(.rodata .rodata.*) }
-    PROVIDE(__symtab_start = .);
-    .symtab             : { *(.symtab) }
-    PROVIDE(__symtab_end = .);
-    PROVIDE(__strtab_start = .);
-    .strtab             : { *(.strtab) }
-    PROVIDE(__strtab_end = .);
-    PROVIDE(__eh_frame_hdr = .);
     .eh_frame_hdr       : { KEEP(*(.eh_frame_hdr)) }
-    PROVIDE(__eh_frame_hdr_end = .);
     PROVIDE(__eh_frame = .);
     .eh_frame           : { KEEP(*(.eh_frame)) }
     .gcc_except_table   : { KEEP(*(.gcc_except_table .gcc_except_table.*)) }
+
+    PROVIDE(__tdata = .);
+    .tdata              : { *(.tdata .tdata.*) }
+    PROVIDE(__tbss = .);
+    .tbss               : { *(.tbss .tbss.*) }
+    PROVIDE(__etbss = .);
+
     .data               : { *(.data .data.*) }
     .sdata              : { *(.sdata .sdata.*) }
     __global_pointer$ = .;

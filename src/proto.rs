@@ -89,6 +89,7 @@ impl Request<'_> {
             ident: [u64; 2],
         }
 
+        #[allow(clippy::cast_ptr_alignment)] // Alignment is checked below.
         let header_ptr = ptr.cast::<RequestHeader>();
 
         if !header_ptr.is_aligned() {
@@ -99,7 +100,7 @@ impl Request<'_> {
         }
 
         // SAFETY: We checked that the pointer is aligned and in bounds.
-        let header = unsafe { ptr.cast::<RequestHeader>().read() };
+        let header = unsafe { header_ptr.read() };
 
         if header.anchor != [0xc7b1dd30df4c8b88, 0x0a82e883a194f07b] {
             return Err(RequestError::BadIdent);
@@ -212,10 +213,10 @@ pub fn handle_requests(
     let requests =
         get_requests_from_section(object).unwrap_or_else(|| get_requests_from_image(object));
 
-    println!(
-        "limine: {} request{}",
+    log::info!(
+        "{} request{}",
         requests.len(),
-        if requests.len() == 1 { "" } else { "s" }
+        if requests.len() == 1 { "" } else { "s" },
     );
 
     for request in requests {

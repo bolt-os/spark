@@ -164,6 +164,12 @@ impl AddressSpace {
         Ok(())
     }
 
+    /// Map pages into this virtual address space
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` if the requested mapping cannot be satisfied (ie. it would overlap with
+    /// an existing mapping), or if invalid arguments are specified.
     pub fn map_pages(
         &mut self,
         virt: usize,
@@ -256,7 +262,7 @@ bitflags::bitflags! {
 }
 
 impl MapFlags {
-    fn map_level(&self) -> usize {
+    fn map_level(self) -> usize {
         if self.contains(MapFlags::HUGE1G) {
             2
         } else if self.contains(MapFlags::HUGE2M) {
@@ -266,7 +272,7 @@ impl MapFlags {
         }
     }
 
-    fn page_size(&self) -> usize {
+    fn page_size(self) -> usize {
         if self.contains(MapFlags::HUGE1G) {
             0x40000000
         } else if self.contains(MapFlags::HUGE2M) {
@@ -385,6 +391,12 @@ pub fn init(vmspace: &mut AddressSpace) {
     unsafe { vmspace.switch_to() };
 }
 
+/// Initialize virtual memory from the information in the FDT
+///
+/// # Panics
+///
+/// This function will panic if the initial mappings (identity map and HHDM) cannot be created.
+/// It also panics if a paging mode cannot be determined, however this really should be an error.
 pub fn init_from_fdt(fdt: &fdt::Fdt, hartid: usize) -> AddressSpace {
     /*
      * Determine the paging mode supported by the BSP, we assumme the
@@ -412,7 +424,7 @@ pub fn init_from_fdt(fdt: &fdt::Fdt, hartid: usize) -> AddressSpace {
     let pmap_size = cmp::max(0x100000000, MAX_PHYS_ADDR.load(Ordering::Relaxed) + 1);
     let hhdm_base = vmspace.paging_mode().higher_half_start();
 
-    println!("Initializing {:?} paging.", vmspace.paging_mode());
+    log::info!("initializing {:?} paging.", vmspace.paging_mode());
 
     vmspace
         .map_pages(0, 0, pmap_size, MapFlags::RWX | MapFlags::HUGE1G)

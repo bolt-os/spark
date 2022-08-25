@@ -45,6 +45,20 @@
 )]
 #![reexport_test_harness_main = "test_main"]
 #![test_runner(test::runner)]
+#![warn(clippy::cargo, clippy::pedantic, clippy::undocumented_unsafe_blocks)]
+#![deny(
+    clippy::semicolon_if_nothing_returned,
+    clippy::debug_assert_with_mut_call
+)]
+#![allow(
+    clippy::cast_lossless,
+    clippy::enum_glob_use,
+    clippy::inline_always,
+    clippy::items_after_statements,
+    clippy::must_use_candidate,
+    clippy::unreadable_literal,
+    clippy::wildcard_imports
+)]
 
 extern crate alloc;
 
@@ -144,9 +158,11 @@ pub unsafe extern "C" fn _start(hart_id: usize, dtb_ptr: *const u8) {
 
 static DTB_PTR: AtomicPtr<u8> = AtomicPtr::new(ptr::null_mut());
 
-#[allow(clippy::not_unsafe_ptr_arg_deref)]
+#[allow(clippy::not_unsafe_ptr_arg_deref, clippy::missing_panics_doc)]
 pub extern "C" fn spark_main(hartid: usize, dtb_ptr: *mut u8) -> ! {
     DTB_PTR.store(dtb_ptr, Ordering::Relaxed);
+
+    io::init();
 
     let fdt = unsafe { fdt::Fdt::from_ptr(dtb_ptr) }.unwrap();
 
@@ -154,6 +170,8 @@ pub extern "C" fn spark_main(hartid: usize, dtb_ptr: *mut u8) -> ! {
     // print_fdt(&fdt);
 
     let mut vmspace = vmm::init_from_fdt(&fdt, hartid);
+
+    dev::pcie::init_from_fdt(&fdt);
 
     let fw_cfg = {
         let fdt_node = fdt.find_compatible(&["qemu,fw-cfg-mmio"]).unwrap();
@@ -169,16 +187,16 @@ pub extern "C" fn spark_main(hartid: usize, dtb_ptr: *mut u8) -> ! {
     let kernel_file = fw_cfg
         .lookup("opt/org.spark/kernel")
         .expect("no kernel found");
-    let kernel_data = fw_cfg.read_file(kernel_file).unwrap();
+    let mut kernel_data = fw_cfg.read_file(kernel_file).unwrap();
     let kernel_elf = elf::Elf::new(&kernel_data).unwrap();
 
-    println!("spark: loading kernel: `opt/org.spark/kernel`");
+    log::info!("loading kernel: `opt/org.spark/kernel`");
     let rtld_object = rtld::load_object(&kernel_elf, &mut vmspace).unwrap();
 
-    println!("spark: physical base: {:#018x}", rtld_object.image_base);
-    println!("spark: virtual base:  {:#018x}", rtld_object.load_base);
-    println!("spark: reloc slide:   {:#018x}", rtld_object.reloc_base);
-    println!("spark: entry point:   {:#018x}", kernel_elf.entry_point());
+    log::info!("physical base: {:#018x}", rtld_object.image_base);
+    log::info!("virtual base:  {:#018x}", rtld_object.load_base);
+    log::info!("reloc slide:   {:#018x}", rtld_object.reloc_base);
+    log::info!("entry point:   {:#018x}", kernel_elf.entry_point());
 
     proto::handle_requests(hartid, &rtld_object, &vmspace, &fdt);
 
@@ -199,8 +217,15 @@ pub extern "C" fn spark_main(hartid: usize, dtb_ptr: *mut u8) -> ! {
     bootinfo.hart_id = hartid;
     bootinfo.free_list = unsafe { pmm::handoff() };
 
+    let entry_point = rtld_object.entry_point();
+
+    bootinfo.kern_file_len = kernel_data.len();
+    bootinfo.kern_file_ptr = kernel_data
+        .as_mut_ptr()
+        .with_addr(vmspace.higher_half_start() + kernel_data.as_mut_ptr().addr());
+
     unsafe {
-        spinup(rtld_object.entry_point(), stack_ptr, 0, bootinfo as _, tp);
+        spinup(entry_point, stack_ptr, 0, bootinfo as _, tp);
     }
 }
 

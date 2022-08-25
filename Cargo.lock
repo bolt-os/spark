@@ -17,10 +17,16 @@ checksum = "bef38d45163c2f1dde094a7dfd33ccf595c92905c8f8f4fdc18d06fb1037718a"
 [[package]]
 name = "bolt-libelf"
 version = "0.1.0"
-source = "git+https://github.com/bolt-os/libelf#6239385c8d9dfc3ed93b5a580d97001f748160af"
+source = "git+https://github.com/bolt-os/libelf#2e6b74f7028b9f73ca07465ef8e049ab9cc4d218"
 dependencies = [
  "bitflags",
 ]
+
+[[package]]
+name = "cfg-if"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "baf1de4339761588bc0619e3cbc0120ee582ebb74b53b4efbf79117bd2da40fd"
 
 [[package]]
 name = "fdt"
@@ -42,7 +48,7 @@ source = "git+https://github.com/bolt-os/libsa#c1b4f90484fef06623da3daa7e4add9c8
 [[package]]
 name = "limine"
 version = "0.1.0"
-source = "git+https://github.com/bolt-os/limine-rs#257f091e76783486b452a5281880abc2d7fe3fa3"
+source = "git+https://github.com/bolt-os/limine-rs#6ebde24159a03f24aca550aaf7f6bdac93440c6e"
 dependencies = [
  "bitflags",
 ]
@@ -55,6 +61,15 @@ checksum = "327fa5b6a6940e4699ec49a9beae1ea4845c6bab9314e4f84ac68742139d8c53"
 dependencies = [
  "autocfg",
  "scopeguard",
+]
+
+[[package]]
+name = "log"
+version = "0.4.17"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "abb12e687cfb44aa40f41fc3978ef76448f9b6038cad6aef4259d3c095a2382e"
+dependencies = [
+ "cfg-if",
 ]
 
 [[package]]
@@ -78,6 +93,7 @@ dependencies = [
  "fdt",
  "libsa",
  "limine",
+ "log",
  "rustc-demangle",
  "spin",
  "unwinding",

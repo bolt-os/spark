@@ -39,6 +39,8 @@ pub const PAGE_SIZE: usize = 4096;
 pub struct Bootinfo {
     pub hart_id: usize,
     pub free_list: FreeList,
+    pub kern_file_ptr: *mut u8,
+    pub kern_file_len: usize,
 }
 
 #[repr(C)]

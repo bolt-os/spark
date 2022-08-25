@@ -28,6 +28,8 @@
  * SPDX-License-Identifier: BSD-3-Clause
  */
 
+use spin::Mutex;
+
 struct Writer;
 
 impl core::fmt::Write for Writer {
@@ -44,8 +46,11 @@ impl core::fmt::Write for Writer {
     }
 }
 
+static WRITER: Mutex<Writer> = Mutex::new(Writer);
+
 pub fn print_fmt(args: core::fmt::Arguments) {
-    <Writer as core::fmt::Write>::write_fmt(&mut Writer, args).unwrap();
+    let mut writer = WRITER.lock();
+    <Writer as core::fmt::Write>::write_fmt(&mut writer, args).unwrap();
 }
 
 #[macro_export]
@@ -57,4 +62,25 @@ macro_rules! print {
 macro_rules! println {
     () => { $crate::print!("\n") };
     ($($t:tt)*) => { $crate::io::print_fmt(format_args!("{}\n", format_args!($($t)*))) };
+}
+
+struct Logger;
+
+impl log::Log for Logger {
+    fn enabled(&self, _metadata: &log::Metadata) -> bool {
+        true
+    }
+
+    fn log(&self, record: &log::Record) {
+        println!("{}: {}", record.target(), record.args());
+    }
+
+    fn flush(&self) {}
+}
+
+static LOGGER: Logger = Logger;
+
+pub fn init() {
+    log::set_logger(&LOGGER).unwrap();
+    log::set_max_level(log::LevelFilter::Trace);
 }

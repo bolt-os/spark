@@ -29,3 +29,4 @@
  */
 
 pub mod fw_cfg;
+pub mod pcie;
