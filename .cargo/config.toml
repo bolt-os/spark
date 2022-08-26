@@ -1,3 +1,4 @@
-[unstable]
-build-std = ["core", "alloc", "compiler_builtins"]
-build-std-features = ["compiler-builtins-mem"]
+[alias]
+xtask = "run --manifest-path ./xtask/Cargo.toml --"
+
+
