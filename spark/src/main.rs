@@ -28,7 +28,7 @@
  * SPDX-License-Identifier: BSD-3-Clause
  */
 
-#![doc = include_str!("../README.md")]
+#![doc = include_str!("../../README.md")]
 #![no_std]
 #![no_main]
 #![feature(

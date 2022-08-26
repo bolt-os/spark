@@ -1,2 +1,4 @@
 target/
 .vscode/settings.json
+.hdd/
+.debug/

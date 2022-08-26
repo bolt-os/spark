@@ -137,7 +137,6 @@ mod bar {
             }
         }
     }
-
 }
 
 pub struct Ecam {
@@ -217,7 +216,11 @@ impl Ecam {
 
             let bar = Bar::new(self, bar_index);
 
-            bar_index += if bar.kind() == BarKind::Memory64 { 2 } else { 1 };
+            bar_index += if bar.kind() == BarKind::Memory64 {
+                2
+            } else {
+                1
+            };
 
             Some(bar)
         })
@@ -311,7 +314,11 @@ fn alloc_resources(_host: &HostBridge, dev_ecam: &Ecam) {
         let mmio_base = pmm::alloc_frames_aligned(pages_for!(bar.layout()), bar.layout()).unwrap();
         println!(
             "pcie: allocting BAR{} for device {:02x}:{:02x}:{:02x}: mmio_base={:#018x}",
-            bar.bar_index(), dev_ecam.addr.0, dev_ecam.addr.1, dev_ecam.addr.2, mmio_base,
+            bar.bar_index(),
+            dev_ecam.addr.0,
+            dev_ecam.addr.1,
+            dev_ecam.addr.2,
+            mmio_base,
         );
         unsafe { bar.set_address(mmio_base) };
     }
