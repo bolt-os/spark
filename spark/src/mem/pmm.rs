@@ -28,11 +28,13 @@
  * SPDX-License-Identifier: BSD-3-Clause
  */
 
-use crate::{page_align_up, vmm::PAGE_SIZE};
+use crate::{page_align_down, page_align_up, vmm::PAGE_SIZE};
 use core::{
-    ptr,
+    ptr::NonNull,
     sync::atomic::{AtomicUsize, Ordering},
 };
+use libsa::extern_sym;
+use spark::Region;
 use spin::mutex::SpinMutex;
 
 pub static MAX_PHYS_ADDR: AtomicUsize = AtomicUsize::new(0);
@@ -130,9 +132,7 @@ impl InitRanges {
             }
         }
 
-        if insertion_point >= self.ranges.len() {
-            panic!("too many memory ranges!");
-        }
+        assert!(insertion_point < Self::MAX_RANGES, "too many memory ranges");
 
         println!("insert: {insert_range:?}");
         self.ranges[insertion_point] = insert_range;
@@ -160,9 +160,7 @@ impl InitRanges {
             return;
         }
 
-        if self.len == Self::MAX_RANGES {
-            panic!("");
-        }
+        assert!(self.len < Self::MAX_RANGES, "too many memory ranges");
 
         let new_range = InitRange {
             base: remove_range.end(),
@@ -217,9 +215,13 @@ pub fn alloc_frames(num_frames: usize) -> Option<usize> {
 }
 
 /// Allocate frames of physical memory aligned to a specific boundary
-pub fn alloc_frames_aligned(num_frames: usize, align: usize) -> Option<usize> {
+///
+/// # Panics
+///
+/// This function will panic if `align` is not a power of two.
+pub fn alloc_frames_aligned(num_frames: usize, align: usize, low_memory: bool) -> Option<usize> {
     assert!(align.is_power_of_two());
-    let align = page_align_up!(align);
+    // let align = page_align_up!(align);
 
     let mut physmap = PHYSMAP.lock();
     let mut regionp = physmap.head;
@@ -238,19 +240,54 @@ pub fn alloc_frames_aligned(num_frames: usize, align: usize) -> Option<usize> {
                     region.base
                 } else {
                     let base = region.base;
-                    region.base += num_frames;
+                    region.base += num_frames * PAGE_SIZE;
                     base
                 };
 
                 return Some(base);
             }
 
-            // are there still enough pages if we increment the base?
+            // are there still enough frames if we increment the base?
+            let align_frames = align_offset / PAGE_SIZE;
 
-            // pull those pages out
+            if region.num_frames < align_frames + num_frames {
+                continue;
+            }
 
-            println!("align_offset: {align_offset:#018x}");
-            todo!();
+            // are we execeeding a `low_memory` requirement?
+            let alloc_base = region.base + align_frames * PAGE_SIZE;
+            if low_memory && alloc_base + num_frames * PAGE_SIZE > u32::MAX as usize {
+                // the list is sorted, if this node exceeds the limit the rest will too.
+                return None;
+            }
+
+            // yes, pull those frames and split the entry
+            let new_base = region.base + PAGE_SIZE * (align_frames + num_frames);
+            let new_size = region.end() - new_base;
+
+            let new_node = unsafe {
+                let ptr = new_base as *mut Region;
+
+                ptr.write(Region {
+                    base: new_base,
+                    num_frames: new_size / PAGE_SIZE,
+                    next: region.next,
+                    prev: regionp,
+                });
+
+                NonNull::new_unchecked(ptr)
+            };
+
+            region.num_frames = align_frames;
+            region.next = Some(new_node);
+
+            if let Some(mut next) = region.next {
+                unsafe { next.as_mut().prev = Some(new_node) };
+            } else {
+                physmap.tail = Some(new_node);
+            }
+
+            return Some(alloc_base);
         }
 
         regionp = region.next;
@@ -342,20 +379,14 @@ pub fn init_from_fdt(fdt: &fdt::Fdt, dtb_ptr: *const u8) {
 
     initmap.remove(dtb_ptr as _, fdt.total_size());
 
-    extern "C" {
-        static __spark_start: u8;
-        static __spark_end: u8;
-    }
-
-    let spark_start = unsafe { ptr::addr_of!(__spark_start).addr() };
-    let spark_size = unsafe { ptr::addr_of!(__spark_end).addr() - spark_start };
-
+    let spark_start = extern_sym!(__spark_start).addr();
+    let spark_size = extern_sym!(__spark_end).addr() - spark_start;
     initmap.remove(spark_start, spark_size);
 
     for range in initmap.ranges() {
-        let start = (range.base + PAGE_SIZE - 1) & !(PAGE_SIZE - 1);
-        let end = (range.base + range.size + PAGE_SIZE - 1) & !(PAGE_SIZE - 1);
-        let size = end - start;
+        let start = page_align_up!(range.start());
+        let size = page_align_down!(range.end() - 1) - start;
+
         unsafe { free_frames(start, size / PAGE_SIZE) };
     }
 }
