@@ -92,7 +92,7 @@ impl<T> VolatileCell<T> {
 }
 
 /// Represents a 64 bit pointer, of which its low and high bits are split in 32-bit-aligned volatile memory.
-#[repr(C, packed)]
+#[repr(C)]
 pub struct VolatileSplitPtr<T> {
     low: VolatileCell<u32>,
     high: VolatileCell<u32>,
@@ -100,6 +100,12 @@ pub struct VolatileSplitPtr<T> {
 }
 
 impl<T> VolatileSplitPtr<T> {
+    /// Sets the low and high components of the split pointer.
+    pub fn set_ptr(&self, low: u32, high: u32) {
+        self.low.write(low);
+        self.high.write(high);
+    }
+
     /// Reads the low and high pointer bits separately, and constructs a pointer from them.
     #[inline]
     pub fn get_ptr_mut(&self) -> *mut T {

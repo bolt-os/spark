@@ -42,6 +42,7 @@
     once_cell,                          // https://github.com/rust-lang/rust/issues/74465
     pointer_is_aligned,                 // https://github.com/rust-lang/rust/issues/96284
     strict_provenance,                  // https://github.com/rust-lang/rust/issues/95228
+    sync_unsafe_cell                    // https://github.com/rust-lang/rust/issues/95439
 )]
 #![reexport_test_harness_main = "test_main"]
 #![test_runner(test::runner)]

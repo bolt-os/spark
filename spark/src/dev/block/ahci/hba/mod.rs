@@ -2,6 +2,7 @@ use core::cell::SyncUnsafeCell;
 
 use crate::mem::{VolatileCell, VolatileSplitPtr};
 
+#[repr(C)]
 pub struct Memory {
     host_capability: VolatileCell<u32>,
     global_host_control: VolatileCell<u32>,
@@ -20,17 +21,36 @@ pub struct Memory {
 }
 
 impl Memory {
-    pub fn ports_implemented(&self) -> [bool; 32] {
-        let ports_impl = self.ports_implemented.read();
-        let ports_impl_slice = [false; 32];
+    pub fn iter_ports(&self) -> PortIterator {
+        PortIterator {
+            ports_implemented: self.ports_implemented.read(),
+            ports: &self.ports,
+            next_index: 0,
+        }
+    }
+}
 
-        for index in 0..32 {
-            if (ports_impl & (1 << index)) > 0 {
-                ports_impl_slice[index] = true;
-            }
+pub struct PortIterator<'a> {
+    ports_implemented: u32,
+    ports: &'a [Port],
+    next_index: usize,
+}
+
+impl<'a> Iterator for PortIterator<'a> {
+    type Item = &'a Port;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        while (self.ports_implemented & (1 << self.next_index)) == 0 {
+            self.next_index += 1;
         }
 
-        ports_impl_slice
+        if self.next_index < 32 {
+            let cur_index = self.next_index;
+            self.next_index += 1;
+            self.ports.get(cur_index)
+        } else {
+            None
+        }
     }
 }
 
@@ -70,12 +90,12 @@ pub struct HostToDevice {
     _rsvd0: [u8; 4],
 }
 
-#[repr(C, packed)]
+#[repr(C, align(1024))]
 pub struct Command {
     bits: u16,
     prd_table_len: u16,
     prd_byte_count: u32,
-    cmd_tbl_addr: u64,
+    cmd_tbl_address: u64,
 }
 
 #[repr(C, align(128))]
@@ -85,6 +105,14 @@ struct CommandTable {
     prdt: [PRDT; 10],
 }
 
+static COMMAND: SyncUnsafeCell<Command> = SyncUnsafeCell::new(Command {
+    bits: 0,
+    prd_table_len: 0,
+    prd_byte_count: 0,
+    cmd_tbl_address: 0,
+});
+
+const COMMAND_TABLE_PRDT_COUNT: u16 = 10;
 static COMMAND_TBL: SyncUnsafeCell<CommandTable> = SyncUnsafeCell::new(CommandTable {
     fis: HostToDevice {
         ty: 0x27,      // host to device
@@ -106,19 +134,24 @@ static COMMAND_TBL: SyncUnsafeCell<CommandTable> = SyncUnsafeCell::new(CommandTa
         _rsvd0: [0u8; 4],
     },
     rsvd0: [0u8; 128 - core::mem::size_of::<HostToDevice>()],
-    prdt: [PRDT::EMPTY; 10],
+    prdt: [PRDT::EMPTY; COMMAND_TABLE_PRDT_COUNT as usize],
 });
+
+/// For the HBA to write received FISes. DO NOT read or write to this.
+#[repr(C, align(256))]
+struct FisReceived([u8; 256]);
+static FIS_RECEIVED: SyncUnsafeCell<FisReceived> = SyncUnsafeCell::new(FisReceived([0u8; 256]));
 
 pub struct Port {
     cmd_list_ptr: VolatileSplitPtr<Command>,
     fis_list_ptr: VolatileSplitPtr<HostToDevice>,
     int_status: VolatileCell<u32>,
     int_enable: VolatileCell<u32>,
-    cmd_status: VolatileCell<u32>,
+    command_status: VolatileCell<u32>,
     _rsvd0: [u8; 4],
     task_file_data: VolatileCell<u32>,
-    signature: VolatileCell<u32>,
-    sata_status: VolatileCell<u32>,
+    pub signature: VolatileCell<u32>,
+    pub sata_status: VolatileCell<u32>,
     sata_control: VolatileCell<u32>,
     sata_error: VolatileCell<u32>,
     sata_active: VolatileCell<u32>,
@@ -130,43 +163,74 @@ pub struct Port {
 }
 
 impl Port {
-    // SAFETY: This function assumes the port it belongs to is the only one being actively utilized.
-    pub unsafe fn read(
-        &self,
-        sector_base: usize,
-        sector_count: core::num::NonZeroU16,
-    ) -> &mut [u8] {
-        const SATA_STATUS_READY: u32 = (1 << 8) | (3 << 0);
-        const ATA_PORT_CLASS: u32 = 0x00000101;
-        const ATA_DEV_BUSY: u8 = 0x80;
-        const ATA_DEV_DRQ: u8 = 0x08;
+    pub const SATA_STATUS_READY: u32 = (1 << 8) | (3 << 0);
+    pub const ATA_PORT_CLASS: u32 = 0x00000101;
+    pub const ATA_DEV_BUSY: u8 = 0x80;
+    pub const ATA_DEV_DRQ: u8 = 0x08;
 
+    pub fn configure(&self) {
+        const FRE: u32 = 4;
+        const ST: u32 = 0;
+        const FR: u32 = 14;
+        const CR: u32 = 15;
+
+        // Stop command processing.
+        self.command_status
+            .write(self.command_status.read() & !(FRE | ST));
+        while (self.command_status.read() & (FR | CR)) > 0 {
+            core::hint::spin_loop();
+        }
+
+        let cmd_list_address = COMMAND.get() as usize;
+        self.cmd_list_ptr
+            .set_ptr(cmd_list_address as u32, (cmd_list_address >> 32) as u32);
+
+        let fis_received_address = FIS_RECEIVED.get() as usize;
+        self.fis_list_ptr.set_ptr(
+            fis_received_address as u32,
+            (fis_received_address >> 32) as u32,
+        );
+
+        // Restart command processing.
+        while (self.command_status.read() & CR) > 0 {
+            core::hint::spin_loop();
+        }
+        self.command_status
+            .write(self.command_status.read() | ST | FRE);
+    }
+
+    // SAFETY: This function assumes the port it belongs to is the only one being actively utilized.
+    pub fn read(&self, sector_base: usize, buffer: &mut [u8]) {
         assert_eq!(
-            (self.sata_status.read() & SATA_STATUS_READY),
-            SATA_STATUS_READY,
+            (self.sata_status.read() & Self::SATA_STATUS_READY),
+            Self::SATA_STATUS_READY,
             "AHCI device must be in a proper ready state"
         );
         assert!(
-            self.signature.read() == ATA_PORT_CLASS,
+            self.signature.read() == Self::ATA_PORT_CLASS,
             "AHCI device is not a supported class"
         );
 
         // Wait for pending port tasks to complete.
-        while (self.task_file_data.read() & ((ATA_DEV_BUSY | ATA_DEV_DRQ) as u32)) > 0 {
+        while (self.task_file_data.read() & ((Self::ATA_DEV_BUSY | Self::ATA_DEV_DRQ) as u32)) > 0 {
             core::hint::spin_loop();
         }
+
+        const SECTOR_SIZE: usize = 512;
+        // align to SECTOR_SIZE
+        let sector_count = ((buffer.len() / SECTOR_SIZE) * SECTOR_SIZE) as u16;
 
         // Clear interrupts
         self.int_status.write(0);
 
         // Get first command
-        let command = &mut *self.cmd_list_ptr.get_ptr_mut();
+        let command = unsafe { &mut *self.cmd_list_ptr.get_ptr_mut() };
         command.bits = (core::mem::size_of::<HostToDevice>() / core::mem::size_of::<u32>()) as u16;
-        command.cmd_tbl_addr = COMMAND_TBL.get() as usize as u64;
-        command.prd_table_len = 1;
+        command.cmd_tbl_address = COMMAND_TBL.get() as usize as u64;
+        command.prd_table_len = COMMAND_TABLE_PRDT_COUNT;
         command.prd_byte_count = 0;
 
-        let cmd_tbl = &mut *COMMAND_TBL.get();
+        let cmd_tbl = unsafe { &mut *COMMAND_TBL.get() };
         let fis = &mut cmd_tbl.fis;
         fis.lba0 = (sector_base >> 0) as u8;
         fis.lba1 = (sector_base >> 8) as u8;
@@ -174,20 +238,16 @@ impl Port {
         fis.lba3 = (sector_base >> 24) as u8;
         fis.lba4 = (sector_base >> 32) as u8;
         fis.lba5 = (sector_base >> 40) as u8;
-        fis.sector_count_low = sector_count.get() as u8;
-        fis.sector_count_high = (sector_count.get() >> 8) as u8;
+        fis.sector_count_low = sector_count as u8;
+        fis.sector_count_high = (sector_count >> 8) as u8;
 
         // TODO don't just assume 512b sector size, read from Identify packet
-        const SECTOR_SIZE: usize = 512;
-        let buffer_base = crate::mem::pmm::alloc_frames(
-            (((sector_count.get() as usize) * SECTOR_SIZE) + 0xFFF) / 0x1000,
-        )
-        .expect("out of memory allocating space for SATA read buffer");
+        let buffer_base = buffer.as_ptr() as usize;
         let prdts = &mut cmd_tbl.prdt;
         let sectors_per_prdt = ((2_usize.pow(21) * 2) / SECTOR_SIZE) as u16;
 
         let mut buffer_offset = buffer_base;
-        let mut remaining_sectors = sector_count.get();
+        let mut remaining_sectors = sector_count;
         for prdt in prdts {
             let prdt_sector_count = core::cmp::min(sectors_per_prdt, remaining_sectors);
             let prdt_byte_count = (prdt_sector_count as usize) * SECTOR_SIZE;
@@ -210,10 +270,9 @@ impl Port {
 
             // TODO check for errors
         }
-
-        core::slice::from_raw_parts_mut(
-            buffer_base as *mut _,
-            (sector_count.get() as usize) * SECTOR_SIZE,
-        )
     }
+}
+
+impl crate::dev::block::BlockDevice for Port {
+    fn read(&self, address: usize, buffer: &mut [u8]) {}
 }
