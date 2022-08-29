@@ -171,7 +171,7 @@ pub extern "C" fn spark_main(hartid: usize, dtb_ptr: *mut u8) -> ! {
 
     let mut vmspace = vmm::init_from_fdt(&fdt, hartid);
 
-    dev::pcie::init_from_fdt(&fdt);
+    dev::init(&fdt);
 
     let fw_cfg = {
         let fdt_node = fdt.find_compatible(&["qemu,fw-cfg-mmio"]).unwrap();

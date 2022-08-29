@@ -21,7 +21,13 @@ SECTIONS {
     .tbss               : { *(.tbss .tbss.*) }
     PROVIDE(__etbss = .);
 
-    .data               : { *(.data .data.*) }
+    .data               :
+    {
+        *(.data .data.*)
+        PROVIDE(__device_drivers = .);
+        KEEP(*(.device_drivers))
+        PROVIDE(__end_device_drivers = .);
+    }
     .sdata              : { *(.sdata .sdata.*) }
     __global_pointer$ = .;
     PROVIDE(__bss_start = .);
