@@ -1,5 +1,7 @@
 use core::cell::SyncUnsafeCell;
 
+use libsa::endian::{LittleEndianU16, LittleEndianU32, LittleEndianU64};
+
 use crate::mem::{VolatileCell, VolatileSplitPtr};
 
 #[repr(C)]
@@ -56,16 +58,16 @@ impl<'a> Iterator for PortIterator<'a> {
 
 #[repr(C, packed)]
 pub struct PRDT {
-    data_addr: u64,
+    data_addr: LittleEndianU64,
     _rsvd0: u32,
-    bits: u32,
+    bits: LittleEndianU32,
 }
 
 impl PRDT {
     const EMPTY: Self = Self {
-        data_addr: 0,
+        data_addr: LittleEndianU64::new(0),
         _rsvd0: 0,
-        bits: 0,
+        bits: LittleEndianU32::new(0),
     };
 }
 
@@ -92,10 +94,10 @@ pub struct HostToDevice {
 
 #[repr(C, align(1024))]
 pub struct Command {
-    bits: u16,
-    prd_table_len: u16,
-    prd_byte_count: u32,
-    cmd_tbl_address: u64,
+    bits: LittleEndianU16,
+    prd_table_len: LittleEndianU16,
+    prd_byte_count: LittleEndianU32,
+    cmd_tbl_address: LittleEndianU64,
 }
 
 #[repr(C, align(128))]
@@ -106,10 +108,10 @@ struct CommandTable {
 }
 
 static COMMAND: SyncUnsafeCell<Command> = SyncUnsafeCell::new(Command {
-    bits: 0,
-    prd_table_len: 0,
-    prd_byte_count: 0,
-    cmd_tbl_address: 0,
+    bits: LittleEndianU16::new(0),
+    prd_table_len: LittleEndianU16::new(0),
+    prd_byte_count: LittleEndianU32::new(0),
+    cmd_tbl_address: LittleEndianU64::new(0),
 });
 
 const COMMAND_TABLE_PRDT_COUNT: u16 = 10;
@@ -145,19 +147,19 @@ static FIS_RECEIVED: SyncUnsafeCell<FisReceived> = SyncUnsafeCell::new(FisReceiv
 pub struct Port {
     cmd_list_ptr: VolatileSplitPtr<Command>,
     fis_list_ptr: VolatileSplitPtr<HostToDevice>,
-    int_status: VolatileCell<u32>,
-    int_enable: VolatileCell<u32>,
-    command_status: VolatileCell<u32>,
+    int_status: VolatileCell<LittleEndianU32>,
+    int_enable: VolatileCell<LittleEndianU32>,
+    command_status: VolatileCell<LittleEndianU32>,
     _rsvd0: [u8; 4],
-    task_file_data: VolatileCell<u32>,
-    pub signature: VolatileCell<u32>,
-    pub sata_status: VolatileCell<u32>,
-    sata_control: VolatileCell<u32>,
-    sata_error: VolatileCell<u32>,
-    sata_active: VolatileCell<u32>,
-    command_issue: VolatileCell<u32>,
-    sata_notify: VolatileCell<u32>,
-    fis_switch_control: VolatileCell<u32>,
+    task_file_data: VolatileCell<LittleEndianU32>,
+    pub signature: VolatileCell<LittleEndianU32>,
+    pub sata_status: VolatileCell<LittleEndianU32>,
+    sata_control: VolatileCell<LittleEndianU32>,
+    sata_error: VolatileCell<LittleEndianU32>,
+    sata_active: VolatileCell<LittleEndianU32>,
+    command_issue: VolatileCell<LittleEndianU32>,
+    sata_notify: VolatileCell<LittleEndianU32>,
+    fis_switch_control: VolatileCell<LittleEndianU32>,
     _rsvd1: [u8; 11],
     _vendor0: [u8; 4],
 }
@@ -175,9 +177,10 @@ impl Port {
         const CR: u32 = 15;
 
         // Stop command processing.
-        self.command_status
-            .write(self.command_status.read() & !(FRE | ST));
-        while (self.command_status.read() & (FR | CR)) > 0 {
+        self.command_status.write(LittleEndianU32::new(
+            self.command_status.read().get() & !(FRE | ST),
+        ));
+        while (self.command_status.read().get() & (FR | CR)) > 0 {
             core::hint::spin_loop();
         }
 
@@ -192,27 +195,30 @@ impl Port {
         );
 
         // Restart command processing.
-        while (self.command_status.read() & CR) > 0 {
+        while (self.command_status.read().get() & CR) > 0 {
             core::hint::spin_loop();
         }
-        self.command_status
-            .write(self.command_status.read() | ST | FRE);
+        self.command_status.write(LittleEndianU32::new(
+            self.command_status.read().get() | ST | FRE,
+        ));
     }
 
     // SAFETY: This function assumes the port it belongs to is the only one being actively utilized.
     pub fn read(&self, sector_base: usize, buffer: &mut [u8]) {
         assert_eq!(
-            (self.sata_status.read() & Self::SATA_STATUS_READY),
+            (self.sata_status.read().get() & Self::SATA_STATUS_READY),
             Self::SATA_STATUS_READY,
             "AHCI device must be in a proper ready state"
         );
         assert!(
-            self.signature.read() == Self::ATA_PORT_CLASS,
+            self.signature.read().get() == Self::ATA_PORT_CLASS,
             "AHCI device is not a supported class"
         );
 
         // Wait for pending port tasks to complete.
-        while (self.task_file_data.read() & ((Self::ATA_DEV_BUSY | Self::ATA_DEV_DRQ) as u32)) > 0 {
+        while (self.task_file_data.read().get() & ((Self::ATA_DEV_BUSY | Self::ATA_DEV_DRQ) as u32))
+            > 0
+        {
             core::hint::spin_loop();
         }
 
@@ -221,14 +227,16 @@ impl Port {
         let sector_count = ((buffer.len() / SECTOR_SIZE) * SECTOR_SIZE) as u16;
 
         // Clear interrupts
-        self.int_status.write(0);
+        self.int_status.write(LittleEndianU32::new(0));
 
         // Get first command
         let command = unsafe { &mut *self.cmd_list_ptr.get_ptr_mut() };
-        command.bits = (core::mem::size_of::<HostToDevice>() / core::mem::size_of::<u32>()) as u16;
-        command.cmd_tbl_address = COMMAND_TBL.get() as usize as u64;
-        command.prd_table_len = COMMAND_TABLE_PRDT_COUNT;
-        command.prd_byte_count = 0;
+        command.bits = LittleEndianU16::new(
+            (core::mem::size_of::<HostToDevice>() / core::mem::size_of::<u32>()) as u16,
+        );
+        command.cmd_tbl_address = LittleEndianU64::new(COMMAND_TBL.get() as usize as u64);
+        command.prd_table_len = LittleEndianU16::new(COMMAND_TABLE_PRDT_COUNT);
+        command.prd_byte_count = LittleEndianU32::new(0);
 
         let cmd_tbl = unsafe { &mut *COMMAND_TBL.get() };
         let fis = &mut cmd_tbl.fis;
@@ -252,8 +260,8 @@ impl Port {
             let prdt_sector_count = core::cmp::min(sectors_per_prdt, remaining_sectors);
             let prdt_byte_count = (prdt_sector_count as usize) * SECTOR_SIZE;
 
-            prdt.data_addr = buffer_offset as u64;
-            prdt.bits = prdt_byte_count as u32;
+            prdt.data_addr = LittleEndianU64::new(buffer_offset as u64);
+            prdt.bits = LittleEndianU32::new(prdt_byte_count as u32);
 
             remaining_sectors -= prdt_sector_count;
             buffer_offset += prdt_byte_count;
@@ -263,9 +271,9 @@ impl Port {
             }
         }
 
-        self.command_issue.write(1);
+        self.command_issue.write(LittleEndianU32::new(1));
 
-        while (self.command_issue.read() & 1) > 0 {
+        while (self.command_issue.read().get() & 1) > 0 {
             core::hint::spin_loop();
 
             // TODO check for errors

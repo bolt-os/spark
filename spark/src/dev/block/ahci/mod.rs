@@ -37,8 +37,8 @@ impl Ahci<'_> {
         let hba_mem = unsafe { (pci_bar5.read_addr() as *mut hba::Memory).as_mut() }.unwrap();
 
         hba_mem.iter_ports().for_each(|port| {
-            if (port.sata_status.read() & hba::Port::SATA_STATUS_READY) > 0
-                && port.signature.read() == hba::Port::ATA_PORT_CLASS
+            if (port.sata_status.read().get() & hba::Port::SATA_STATUS_READY) > 0
+                && port.signature.read().get() == hba::Port::ATA_PORT_CLASS
             {
                 port.configure();
                 block_devices.push(Box::new(AhciPort { port }));
