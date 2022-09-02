@@ -1,22 +1,22 @@
 use core::cell::SyncUnsafeCell;
-
-use libsa::endian::{LittleEndianU16, LittleEndianU32, LittleEndianU64};
-
-use crate::mem::{VolatileCell, VolatileSplitPtr};
+use libsa::{
+    endian::{LittleEndianU16, LittleEndianU32, LittleEndianU64},
+    volatile::{Volatile, VolatileSplitPtr},
+};
 
 #[repr(C)]
 pub struct Memory {
-    host_capability: VolatileCell<u32>,
-    global_host_control: VolatileCell<u32>,
-    interrupt_status: VolatileCell<u32>,
-    ports_implemented: VolatileCell<u32>,
-    version: VolatileCell<u32>,
-    ccc_control: VolatileCell<u32>,
-    ccc_ports: VolatileCell<u32>,
-    enclosure_management_location: VolatileCell<u32>,
-    enclosure_management_control: VolatileCell<u32>,
-    host_capabilities_extended: VolatileCell<u32>,
-    bios_handoff_control_status: VolatileCell<u32>,
+    host_capability: Volatile<u32>,
+    global_host_control: Volatile<u32>,
+    interrupt_status: Volatile<u32>,
+    ports_implemented: Volatile<u32>,
+    version: Volatile<u32>,
+    ccc_control: Volatile<u32>,
+    ccc_ports: Volatile<u32>,
+    enclosure_management_location: Volatile<u32>,
+    enclosure_management_control: Volatile<u32>,
+    host_capabilities_extended: Volatile<u32>,
+    bios_handoff_control_status: Volatile<u32>,
     _reserved0: [u8; 0x74],
     _vendor0: [u8; 0x60],
     ports: [Port; 32],
@@ -144,27 +144,31 @@ static COMMAND_TBL: SyncUnsafeCell<CommandTable> = SyncUnsafeCell::new(CommandTa
 struct FisReceived([u8; 256]);
 static FIS_RECEIVED: SyncUnsafeCell<FisReceived> = SyncUnsafeCell::new(FisReceived([0u8; 256]));
 
+#[repr(C)]
+#[allow(dead_code)]
 pub struct Port {
     cmd_list_ptr: VolatileSplitPtr<Command>,
-    fis_list_ptr: VolatileSplitPtr<HostToDevice>,
-    int_status: VolatileCell<LittleEndianU32>,
-    int_enable: VolatileCell<LittleEndianU32>,
-    command_status: VolatileCell<LittleEndianU32>,
+    fis_list_ptr: VolatileSplitPtr<FisReceived>,
+    int_status: Volatile<LittleEndianU32>,
+    int_enable: Volatile<LittleEndianU32>,
+    command_status: Volatile<LittleEndianU32>,
     _rsvd0: [u8; 4],
-    task_file_data: VolatileCell<LittleEndianU32>,
-    pub signature: VolatileCell<LittleEndianU32>,
-    pub sata_status: VolatileCell<LittleEndianU32>,
-    sata_control: VolatileCell<LittleEndianU32>,
-    sata_error: VolatileCell<LittleEndianU32>,
-    sata_active: VolatileCell<LittleEndianU32>,
-    command_issue: VolatileCell<LittleEndianU32>,
-    sata_notify: VolatileCell<LittleEndianU32>,
-    fis_switch_control: VolatileCell<LittleEndianU32>,
+    task_file_data: Volatile<LittleEndianU32>,
+    pub signature: Volatile<LittleEndianU32>,
+    pub sata_status: Volatile<LittleEndianU32>,
+    sata_control: Volatile<LittleEndianU32>,
+    sata_error: Volatile<LittleEndianU32>,
+    sata_active: Volatile<LittleEndianU32>,
+    command_issue: Volatile<LittleEndianU32>,
+    sata_notify: Volatile<LittleEndianU32>,
+    fis_switch_control: Volatile<LittleEndianU32>,
     _rsvd1: [u8; 11],
     _vendor0: [u8; 4],
 }
 
 impl Port {
+    const SECTOR_SIZE: usize = 512;
+
     pub const SATA_STATUS_READY: u32 = (1 << 8) | (3 << 0);
     pub const ATA_PORT_CLASS: u32 = 0x00000101;
     pub const ATA_DEV_BUSY: u8 = 0x80;
@@ -184,15 +188,8 @@ impl Port {
             core::hint::spin_loop();
         }
 
-        let cmd_list_address = COMMAND.get() as usize;
-        self.cmd_list_ptr
-            .set_ptr(cmd_list_address as u32, (cmd_list_address >> 32) as u32);
-
-        let fis_received_address = FIS_RECEIVED.get() as usize;
-        self.fis_list_ptr.set_ptr(
-            fis_received_address as u32,
-            (fis_received_address >> 32) as u32,
-        );
+        self.cmd_list_ptr.set(COMMAND.get());
+        self.fis_list_ptr.set(FIS_RECEIVED.get());
 
         // Restart command processing.
         while (self.command_status.read().get() & CR) > 0 {
@@ -222,15 +219,14 @@ impl Port {
             core::hint::spin_loop();
         }
 
-        const SECTOR_SIZE: usize = 512;
         // align to SECTOR_SIZE
-        let sector_count = ((buffer.len() / SECTOR_SIZE) * SECTOR_SIZE) as u16;
+        let sector_count = ((buffer.len() / Self::SECTOR_SIZE) * Self::SECTOR_SIZE) as u16;
 
         // Clear interrupts
         self.int_status.write(LittleEndianU32::new(0));
 
         // Get first command
-        let command = unsafe { &mut *self.cmd_list_ptr.get_ptr_mut() };
+        let command = unsafe { &mut *self.cmd_list_ptr.get() };
         command.bits = LittleEndianU16::new(
             (core::mem::size_of::<HostToDevice>() / core::mem::size_of::<u32>()) as u16,
         );
@@ -252,13 +248,13 @@ impl Port {
         // TODO don't just assume 512b sector size, read from Identify packet
         let buffer_base = buffer.as_ptr() as usize;
         let prdts = &mut cmd_tbl.prdt;
-        let sectors_per_prdt = ((2_usize.pow(21) * 2) / SECTOR_SIZE) as u16;
+        let sectors_per_prdt = ((2_usize.pow(21) * 2) / Self::SECTOR_SIZE) as u16;
 
         let mut buffer_offset = buffer_base;
         let mut remaining_sectors = sector_count;
         for prdt in prdts {
             let prdt_sector_count = core::cmp::min(sectors_per_prdt, remaining_sectors);
-            let prdt_byte_count = (prdt_sector_count as usize) * SECTOR_SIZE;
+            let prdt_byte_count = (prdt_sector_count as usize) * Self::SECTOR_SIZE;
 
             prdt.data_addr = LittleEndianU64::new(buffer_offset as u64);
             prdt.bits = LittleEndianU32::new(prdt_byte_count as u32);
@@ -282,5 +278,8 @@ impl Port {
 }
 
 impl crate::dev::block::BlockDevice for Port {
-    fn read(&self, address: usize, buffer: &mut [u8]) {}
+    fn read(&self, address: usize, buffer: &mut [u8]) {
+        // TODO don't just silently truncate the low address bits
+        self.read(address & !(Self::SECTOR_SIZE - 1), buffer);
+    }
 }

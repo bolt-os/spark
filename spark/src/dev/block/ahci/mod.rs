@@ -18,8 +18,7 @@ static AHCI_PCI_DRIVER: DeviceDriver = DeviceDriver {
     pci_init: Some(Ahci::from_pci_device),
 };
 
-fn init(device: &Device) {}
-
+#[allow(dead_code)]
 pub struct Ahci<'a> {
     device: &'a Device,
     sata_ports: Vec<&'a hba::Port>,
