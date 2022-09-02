@@ -28,6 +28,7 @@
  * SPDX-License-Identifier: BSD-3-Clause
  */
 
+pub mod block;
 pub mod fw_cfg;
 pub mod pcie;
 
