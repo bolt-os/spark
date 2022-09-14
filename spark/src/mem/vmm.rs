@@ -120,6 +120,20 @@ pub fn invalidate_page(vaddr: usize, asid: u16) {
     }
 }
 
+#[repr(u64)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum MemoryType {
+    PMA = 0 << 61,
+    NC = 1 << 61,
+    IO = 2 << 61,
+}
+
+impl Default for MemoryType {
+    fn default() -> Self {
+        Self::PMA
+    }
+}
+
 impl AddressSpace {
     /// Create a new, empty, virtual address space
     pub const fn new(paging_mode: PagingMode) -> AddressSpace {
@@ -146,8 +160,12 @@ impl AddressSpace {
     /// The caller must ensure that itself and any data it intended to access are properly
     /// mapped into this address space.
     pub unsafe fn switch_to(&self) {
-        let satp = ((self.mode as usize) << 60) | ((self.asid as usize) << 44) | (self.root >> 12);
-        asm!("csrw satp, {}", in(reg) satp, options(nostack, preserves_flags));
+        #[cfg(target_arch = "riscv64")]
+        {
+            let satp =
+                ((self.mode as usize) << 60) | ((self.asid as usize) << 44) | (self.root >> 12);
+            asm!("csrw satp, {}", in(reg) satp, options(nostack, preserves_flags));
+        }
     }
 
     pub fn higher_half_start(&self) -> usize {
@@ -166,6 +184,8 @@ impl AddressSpace {
 
     /// Map pages into this virtual address space
     ///
+    /// The pages will be mapped with the default memory type.
+    ///
     /// # Errors
     ///
     /// Returns `Err` if the requested mapping cannot be satisfied (ie. it would overlap with
@@ -176,6 +196,23 @@ impl AddressSpace {
         phys: usize,
         size: usize,
         flag: MapFlags,
+    ) -> Result<(), MapError> {
+        self.map_pages_with_type(virt, phys, size, flag, MemoryType::default())
+    }
+
+    /// Map pages into this virtual address space with the specified [`MemoryType`]
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` if the requested mapping cannot be satisfied (ie. it would overlap with
+    /// an existing mapping), or if invalid arguments are specified.
+    pub fn map_pages_with_type(
+        &mut self,
+        virt: usize,
+        phys: usize,
+        size: usize,
+        flag: MapFlags,
+        pbmt: MemoryType,
     ) -> Result<(), MapError> {
         // `HUGE2M` and `HUGE1G` are mutually exclusive.
         if flag.contains(MapFlags::HUGE2M) && flag.contains(MapFlags::HUGE1G) {
@@ -197,13 +234,13 @@ impl AddressSpace {
 
         // Map each page
         for i in 0..pages_for!(size, page_size) {
-            self.map_page(virt + page_size * i, phys + page_size * i, flag);
+            self.map_page(virt + page_size * i, phys + page_size * i, flag, pbmt);
         }
 
         Ok(())
     }
 
-    fn map_page(&mut self, virt: usize, phys: usize, flag: MapFlags) {
+    fn map_page(&mut self, virt: usize, phys: usize, flag: MapFlags, pbmt: MemoryType) {
         if self.root == 0 {
             self.root = allocate_page_table();
         }
@@ -222,6 +259,7 @@ impl AddressSpace {
                 entry.set_address(phys);
                 entry.set_flags(flag);
                 entry.set_present(true);
+                entry.set_type(pbmt);
                 return;
             }
 
@@ -365,6 +403,12 @@ impl PageTableEntry {
         } else {
             self.0 &= !0x10;
         }
+    }
+
+    const PBMT_MASK: usize = 3 << 61;
+
+    fn set_type(&mut self, pbmt: MemoryType) {
+        self.0 = (self.0 & !Self::PBMT_MASK) | pbmt as usize;
     }
 
     fn set_flags(&mut self, flag: MapFlags) {
