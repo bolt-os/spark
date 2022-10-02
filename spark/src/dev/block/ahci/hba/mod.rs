@@ -42,7 +42,7 @@ impl<'a> Iterator for PortIterator<'a> {
     type Item = &'a Port;
 
     fn next(&mut self) -> Option<Self::Item> {
-        while (self.ports_implemented & (1 << self.next_index)) == 0 {
+        while self.next_index < 32 && (self.ports_implemented & (1 << self.next_index)) == 0 {
             self.next_index += 1;
         }
 
