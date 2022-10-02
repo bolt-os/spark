@@ -28,6 +28,63 @@
  * SPDX-License-Identifier: BSD-3-Clause
  */
 
+
+.section .text._start,"ax",@progbits
+.global _start
+.type _start,@function
+_start:
+        /*
+         * Load the GP register with the global pointer (provided by the linker script).
+         * Linker relaxations must be disabled as they rely on GP being set.
+         */
+.option push
+.option norelax
+        lla             gp, __global_pointer$
+.option pop
+
+        lla             sp, __boot_stackp
+
+        /*
+         * Set up the trap handler.. which may or may not work before relocations
+         * have been performed.
+         */
+        lla             t0, trap_entry
+        csrw            stvec, t0
+
+        /*
+         * Clear the .bss segment.
+         *
+         * The linker script ensures __bss is properly aligned, and the size is at least
+         * 8 bytes.
+         */
+        lla             t0, __bss
+        lla             t1, __ebss
+0:      sd              zero, (t0)
+        addi            t0, t0, 8
+        bltu            t0, t1, 0b
+
+        /*
+         * We may or may not have been loaded to our linked address.
+         */
+        mv              s0, a0
+        mv              s1, a1
+        lla             a0, __image_base
+        lla             a1, _DYNAMIC
+        call            _relocate
+        bnez            a0, error
+        mv              a0, s0
+        mv              a1, s1
+
+        mv              fp, zero
+        call            spark_main
+
+error:
+        csrci           sstatus, 0x2
+        wfi
+        j               .
+.size _start, . - _start
+
+
 .altmacro
 
 .macro _SAVE_GP_REG reg

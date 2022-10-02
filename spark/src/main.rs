@@ -116,51 +116,10 @@ pub unsafe extern "C" fn trap_handler() {
     hcf();
 }
 
-/// # Safety
-///
-/// lmao.
-#[naked]
-#[no_mangle]
-#[link_section = ".text._start"]
-pub unsafe extern "C" fn _start(hart_id: usize, dtb_ptr: *const u8) {
-    asm! {
-        r#"
-            // Load the global pointer
-        .option push
-        .option norelax
-            la          gp, __global_pointer$
-        .option pop
-
-            // Load the stack pointer
-            la          sp, __boot_stackp
-
-            // Set the trap entry point
-            la          t0, trap_entry
-            csrw        stvec, t0
-
-            // Zero out the .bss segment
-            la          t0, __bss_start
-            la          t1, __bss_end
-        4:  sb          zero, (t0)
-            addi        t0, t0, 1
-            bltu        t0, t1, 4b
-
-            // Clear frame pointer
-            mv          fp, zero
-
-            // To Rust!
-            call        {spark_main}
-
-            j           .
-        "#,
-        spark_main = sym spark_main,
-        options(noreturn),
-    }
-}
-
 static DTB_PTR: AtomicPtr<u8> = AtomicPtr::new(ptr::null_mut());
 
 #[allow(clippy::not_unsafe_ptr_arg_deref, clippy::missing_panics_doc)]
+#[no_mangle]
 pub extern "C" fn spark_main(hartid: usize, dtb_ptr: *mut u8) -> ! {
     DTB_PTR.store(dtb_ptr, Ordering::Relaxed);
 

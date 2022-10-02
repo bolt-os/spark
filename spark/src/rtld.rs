@@ -247,6 +247,7 @@ fn resolve_relocations(object: &mut Rtld) {
         let location = object.reloc_addr(reloc_entry.offset as usize);
 
         match reloc_entry.kind() {
+            RelocKind::None => {}
             RelocKind::Relative => {
                 let value = object.reloc_addr(reloc_entry.addend as usize);
                 unsafe { *(location as *mut usize) = value };
@@ -278,4 +279,62 @@ fn resolve_ifuncs(object: &mut Rtld) {
         let resolv = object.reloc_addr(reloc_entry.addend as usize) as *const IfuncResolver;
         unsafe { *location = (*resolv)() };
     }
+}
+
+#[no_mangle]
+pub extern "C" fn _relocate(reloc_slide: usize, mut dyntab: *const elf::Dyn) -> usize {
+    const RELOC_ERROR: usize = 1 << 63;
+    const RELOC_OK: usize = 0;
+
+    let relocation_table = unsafe {
+        let mut table_addr = None;
+        let mut table_size = None;
+        let mut entry_size = None;
+
+        loop {
+            let entry = dyntab.read();
+
+            match entry.tag() {
+                DynTag::Null => break,
+                DynTag::Rela => table_addr = Some(entry.value()),
+                DynTag::RelaSize => table_size = Some(entry.value()),
+                DynTag::RelaEnt => entry_size = Some(entry.value()),
+                _ => {}
+            }
+
+            dyntab = dyntab.add(1);
+        }
+
+        if table_addr.is_none() && entry_size.is_none() {
+            // There are no relocations
+            return RELOC_OK;
+        }
+
+        let Some(table_addr) = table_addr else { return RELOC_ERROR };
+        let Some(table_size) = table_size else { return RELOC_ERROR };
+        let Some(entry_size) = entry_size else { return RELOC_ERROR };
+
+        if entry_size != size_of!(elf::Rela) {
+            return RELOC_ERROR;
+        }
+
+        let data = reloc_slide.wrapping_add(table_addr) as *const elf::Rela;
+        let len = table_size / entry_size;
+
+        core::slice::from_raw_parts(data, len)
+    };
+
+    for relocation in relocation_table {
+        match relocation.kind() {
+            RelocKind::None => {}
+            RelocKind::Relative => {
+                let target = reloc_slide.wrapping_add(relocation.offset as usize);
+                let value = reloc_slide.wrapping_add(relocation.addend as usize);
+                unsafe { *(target as *mut usize) = value };
+            }
+            _ => return RELOC_ERROR,
+        }
+    }
+
+    RELOC_OK
 }
