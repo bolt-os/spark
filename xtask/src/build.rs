@@ -85,7 +85,7 @@ pub fn build(ctx: &BuildCtx, options: Options) -> anyhow::Result<()> {
     ctx.shell.copy_file(&target_elf, &spark_elf)?;
 
     // Create a flat binary
-    let objcopy = ctx.llvm_tool("llvm-objcopy")?;
+    let objcopy = &ctx.objcopy_cmd;
     cmd!(ctx.shell, "{objcopy} -O binary {target_elf} {spark_bin}").run()?;
 
     Ok(())

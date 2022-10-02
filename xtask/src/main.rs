@@ -49,15 +49,37 @@ pub struct SparkBuildOptions {
 
 pub struct BuildCtx {
     shell: xshell::Shell,
-    llvm_tools: llvm_tools::LlvmTools,
     target_dir: PathBuf,
     cargo_cmd: String,
+    objcopy_cmd: PathBuf,
+}
+
+fn find_objcopy() -> anyhow::Result<PathBuf> {
+    if let Ok(llvm_tools) = llvm_tools::LlvmTools::new() {
+        if let Some(llvm_objcopy) = llvm_tools.tool(&llvm_tools::exe("llvm-objcopy")) {
+            return Ok(llvm_objcopy);
+        }
+    }
+
+    let shell = xshell::Shell::new()?;
+
+    for cmd in ["llvm-objcopy", "riscv64-unknown-elf-objcopy", "objcopy"] {
+        if shell.cmd(cmd).arg("-V").quiet().run().is_ok() {
+            return Ok(PathBuf::from(cmd));
+        }
+    }
+
+    Err(anyhow::anyhow!(concat!(
+        "Cannot find a usable objcopy.\n",
+        "\n",
+        "Make sure an objcopy which supports the RISC-V architecture is in your PATH.\n",
+        "Optionally, you can instead install the `llvm-tools-preview` component via rustup:\n",
+        "    rustup component add llvm-tools-preview\n",
+    )))
 }
 
 impl BuildCtx {
     fn new() -> anyhow::Result<BuildCtx> {
-        let llvm_tools = llvm_tools::LlvmTools::new().map_err(|e| anyhow::anyhow!("{e:?}"))?;
-
         let mut target_dir = env::current_dir()?;
         target_dir.push("target");
 
@@ -71,20 +93,10 @@ impl BuildCtx {
         };
 
         Ok(Self {
-            llvm_tools,
             target_dir,
             cargo_cmd,
             shell: xshell::Shell::new()?,
-        })
-    }
-
-    fn llvm_tool(&self, name: &str) -> anyhow::Result<PathBuf> {
-        self.llvm_tools.tool(&llvm_tools::exe(name)).ok_or_else(|| {
-            anyhow::anyhow!(concat!(
-                "cannot find tool: `{}`\n",
-                "is the `llvm-tools-preview` component installed?\n",
-                "try running `rustup component add llvm-tools-preview`."
-            ))
+            objcopy_cmd: find_objcopy()?,
         })
     }
 }
