@@ -1,5 +1,6 @@
+use crate::{run_command, BuildCtx, SparkBuildOptions};
 use clap::{clap_derive::ArgEnum, Parser};
-use xshell::cmd;
+use std::{ffi::OsString, path::PathBuf, process::Command};
 
 #[derive(ArgEnum, Clone, Copy)]
 pub enum BlockDriver {
@@ -20,6 +21,12 @@ impl core::fmt::Debug for BlockDriver {
 
 #[derive(Parser)]
 pub struct Options {
+    #[clap(flatten)]
+    general_options: SparkBuildOptions,
+
+    #[clap(long)]
+    kernel: Option<PathBuf>,
+
     /// Number of CPUs to emulate.
     #[clap(long, default_value = "4")]
     smp: usize,
@@ -32,6 +39,9 @@ pub struct Options {
     #[clap(long)]
     log: bool,
 
+    #[clap(short, long)]
+    debug: bool,
+
     /// Stops QEMU from automatically exiting when a triple fault occurs.
     #[clap(long)]
     no_shutdown: bool,
@@ -39,44 +49,87 @@ pub struct Options {
     /// Which type of block driver to use for root drive.
     #[clap(arg_enum, long, default_value = "virt-io")]
     block: BlockDriver,
+
+    #[clap(last = true)]
+    emu_args: Vec<OsString>,
 }
 
-pub fn run(options: Options) -> Result<(), xshell::Error> {
-    let shell = xshell::Shell::new()?;
+impl core::ops::Deref for Options {
+    type Target = SparkBuildOptions;
 
-    let smp_str = format!("{}", options.smp);
-    let ram_str = format!("{}", options.ram);
-    let block_driver_str = format!("{:?}", options.block);
-    let log_str = if options.log {
-        vec!["-d", "int,guest_errors", "-D", ".debug/qemu.log"]
-    } else {
-        vec![]
-    };
-    let no_shutdown_str = if options.no_shutdown {
-        vec!["-no-shutdown"]
-    } else {
-        vec![]
-    };
+    fn deref(&self) -> &Self::Target {
+        &self.general_options
+    }
+}
 
-    cmd!(
-        shell,
-        "
-        qemu-system-riscv64
-            -no-reboot
-            -machine virt
-            -cpu rv64
-            -smp {smp_str}
-            -m {ram_str}M
-            -kernel .hdd/bootloader.elf
-            -serial mon:stdio
-            -net none
-            -drive format=raw,file=.hdd/disk0.img,id=disk1,if=none
-            -device {block_driver_str},drive=disk1,serial=deadbeef
-            {log_str...}
-            {no_shutdown_str...}
-        "
-    )
-    .run()?;
+pub fn run(ctx: &BuildCtx, options: Options) -> anyhow::Result<()> {
+    /*
+     * Make sure we run an up-to-date version of the bootloader.
+     */
+    crate::build::build(
+        ctx,
+        crate::build::Options {
+            general_options: options.general_options.clone(),
+            clippy: false,
+        },
+    )?;
+
+    let spark_elf = PathBuf::from(format!(
+        ".hdd/spark-{}-{}.elf",
+        options.target,
+        if options.release { "release" } else { "debug" }
+    ));
+    let spark_bin = spark_elf.with_extension("bin");
+
+    let mut qemu = Command::new("qemu-system-riscv64");
+
+    #[rustfmt::skip]
+    qemu.args([
+        "-machine", "virt,aclint=on",
+        "-cpu", "rv64,svpbmt=true",
+        "-m", &options.ram.to_string(),
+        "-smp", &options.smp.to_string(),
+        "-serial", "mon:stdio",
+    ]);
+
+    if options.debug {
+        qemu.args(["-s", "-S"]);
+    }
+
+    if options.log {
+        qemu.args(["-d", "int,guest_errors", "-D", "qemu-log.txt"]);
+    }
+
+    match options.block {
+        BlockDriver::AHCI => {
+            qemu.args([
+                "-device",
+                "ahci,id=ahci",
+                "-device",
+                "ide-hd,drive=disk0,bus=ahci.0",
+            ]);
+        }
+        BlockDriver::NVME => {
+            qemu.args(["-device", "nvme,serial=deadbeef,drive=disk0"]);
+        }
+        BlockDriver::VirtIO => {
+            qemu.args(["-device", "virtio-blk-pci,serial=deadbeef,drive=disk0"]);
+        }
+    }
+
+    qemu.args(["-drive", "id=disk0,format=raw,if=none,file=.hdd/disk0.img"]);
+
+    qemu.arg("-kernel");
+    qemu.arg(&spark_bin);
+
+    if let Some(kernel_path) = options.kernel {
+        let arg = format!("opt/org.spark/kernel,file={}", kernel_path.display());
+        qemu.args(["-fw_cfg", &arg]);
+    }
+
+    qemu.args(options.emu_args);
+
+    run_command(qemu)?;
 
     Ok(())
 }
