@@ -66,15 +66,15 @@ mod bar {
             let bar_offset = 4 * (4 + bar_index);
             let bar_value = unsafe { dev.ecam.read_u32(bar_offset) };
 
-            let kind = if bar_value == 0 {
-                // Unimplemented BARs are hardwired to zero.
-                BarKind::None
-            } else if bar_value & 0x1 == 1 {
-                // If bit 0 is 1, the BAR is an I/O space BAR.
+            /*
+             * We cannot check for unimplemented BARs until we write all 1s to get the mask,
+             * since all 0s could be a non-prefetchable 32-bit memory region.
+             * If the BAR *is* unimplemented, `kind` will be set to `Memory32` here, and this
+             * case is checked below when calculating `layout`.
+             */
+            let mut kind = if bar_value & 0x1 == 0x1 {
                 BarKind::Io
             } else {
-                // Otherwise, it is a memory space BAR.
-                // The width of the register is specified in bits 2:1.
                 match (bar_value >> 1) & 0x3 {
                     0x0 => BarKind::Memory32,
                     0x2 => BarKind::Memory64,
@@ -97,9 +97,17 @@ mod bar {
                         let ctrl_mask = if kind == BarKind::Io { 0x3 } else { 0xf };
                         dev.ecam.write_u32(bar_offset, !0);
                         let mask = dev.ecam.read_u32(bar_offset);
-                        dev.ecam.write_u32(bar_offset, bar_value);
 
-                        !(mask & !ctrl_mask) as usize + 1
+                        /*
+                         * If we get back 0 then the BAR is unimplemented.
+                         */
+                        if bar_value == 0 && mask == 0 {
+                            kind = BarKind::None;
+                            0
+                        } else {
+                            dev.ecam.write_u32(bar_offset, bar_value);
+                            !(mask & !ctrl_mask) as usize + 1
+                        }
                     }
                 }
             };
@@ -387,7 +395,6 @@ mod device {
 
                 Some(bar)
             })
-            .filter(|bar| bar.kind() != BarKind::None)
         }
 
         fn read_command_register(&self) -> CommandRegister {
