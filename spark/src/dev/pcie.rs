@@ -30,14 +30,14 @@
 
 #![allow(clippy::cast_possible_truncation)]
 
-pub use device::{CommandRegister, Device, DeviceIdent};
-
 use super::{device_drivers, DeviceDriver};
-use crate::{pages_for, pmm};
-use bar::BarKind;
+pub use bar::{Bar, BarKind};
 use core::{fmt, ops::RangeInclusive};
 use device::DeviceKind;
 use ecam::Ecam;
+use libsa::endian::BigEndianU32;
+
+pub use device::{CommandRegister, Device, DeviceIdent};
 
 mod bar {
     use super::device::Device;
@@ -464,6 +464,7 @@ fn device_kind(id: DeviceIdent) -> &'static str {
 pub struct HostBridge {
     bus_range: RangeInclusive<u8>,
     ecam_base: *mut u8,
+    ranges: Vec<Range>,
 }
 
 // SAFETY: We just wanna store a raw pointer man!
@@ -516,6 +517,28 @@ impl HostBridge {
             multifunc,
         })
     }
+
+    fn allocate_resource(
+        &mut self,
+        addr_space: AddressSpace,
+        size: usize,
+        align: usize,
+    ) -> Option<usize> {
+        let mut alloc_base = None;
+
+        for range in &mut self.ranges {
+            if range.addr_space != addr_space {
+                continue;
+            }
+
+            if let Some(base) = range.try_allocate(size, align) {
+                alloc_base = Some(base);
+                break;
+            }
+        }
+
+        alloc_base
+    }
 }
 
 #[derive(Clone, Copy, Default, Eq, Hash, PartialEq)]
@@ -551,31 +574,40 @@ fn busdev_iter() -> impl Iterator<Item = (u8, u8)> {
     })
 }
 
-fn alloc_resources(_host: &HostBridge, device: &mut Device) {
+fn alloc_resources(host: &mut HostBridge, device: &mut Device) {
     let mut enable_mmio = false;
     let mut enable_ioio = false;
 
     for bar in device.bars() {
-        match bar.kind() {
+        let addr_space = match bar.kind() {
             // Skip unimplemented BARs.
             BarKind::None => continue,
-            BarKind::Io => enable_ioio = true,
-            BarKind::Memory32 | BarKind::Memory64 => enable_mmio = true,
+            BarKind::Io => {
+                enable_ioio = true;
+                AddressSpace::Io
+            }
+            BarKind::Memory32 => {
+                enable_mmio = true;
+                AddressSpace::Memory32
+            }
+            BarKind::Memory64 => {
+                enable_mmio = true;
+                AddressSpace::Memory64
+            }
         };
 
-        let Some(mmio_base) = pmm::alloc_frames_aligned(
-            pages_for!(bar.layout()),
-            bar.layout(),
-            // `Memory32` and `Io` BARs need to be allocated below the 4 GiB limit.
-            // `Io` can technically be allocated anywhere (even outside of RAM), a potential
-            // optimization for later.
-            bar.kind() != BarKind::Memory64,
-        ) else {
-            log::warn!("failed to allocate BAR for device {:?}", device.addr);
-            return;
+        let bar_size = bar.layout();
+
+        let Some(mmio_base) = host.allocate_resource(addr_space, bar_size, bar_size) else {
+            log::warn!("{:?}: failed to allocate BAR{}", device.addr, bar.bar_index());
+            continue;
         };
 
-        log::debug!("    allocated BAR{} at {mmio_base:#018x}", bar.bar_index());
+        log::debug!(
+            "{:?}: BAR{} ({addr_space:?}) at {mmio_base:#x}",
+            device.addr,
+            bar.bar_index()
+        );
 
         // SAFETY: If `alloc_frames_aligned()` was successful, `mmio_base` is a well aligned
         // address and is within range for the BAR.
@@ -592,7 +624,7 @@ fn alloc_resources(_host: &HostBridge, device: &mut Device) {
     });
 }
 
-fn probe(host: &HostBridge, bus: u8, dev: u8, func: u8) -> bool {
+fn probe(host: &mut HostBridge, bus: u8, dev: u8, func: u8) -> bool {
     let Some(mut device) = host.get_device(bus, dev, func) else { return false };
 
     if device.kind != DeviceKind::Regular {
@@ -601,8 +633,10 @@ fn probe(host: &HostBridge, bus: u8, dev: u8, func: u8) -> bool {
         return false;
     }
 
-    log::debug!(
-        "  {:?}: {:?}: {}",
+    // TODO: Expansion ROMs?
+
+    log::info!(
+        "{:?}: {:?}: {}",
         device.addr,
         device.ident,
         device_kind(device.ident),
@@ -645,7 +679,7 @@ fn match_pci_driver(dev: &Device) -> Option<&'static DeviceDriver> {
         })
 }
 
-fn get_bus_range(node: &fdt::node::FdtNode) -> RangeInclusive<u8> {
+fn fdt_get_bus_range(node: &fdt::node::FdtNode) -> RangeInclusive<u8> {
     let Some(property) = node.property("bus-range") else { return 0..=255 };
     let bus_range = property.value;
 
@@ -658,11 +692,14 @@ fn get_bus_range(node: &fdt::node::FdtNode) -> RangeInclusive<u8> {
 }
 
 fn init(_fdt: &fdt::Fdt, node: &fdt::node::FdtNode) {
-    let Some(mmio_window) = node.reg().unwrap().next() else { return };
+    let Some(cam_window) = node.reg().and_then(|mut reg| reg.next()) else { return };
+    let bus_range = fdt_get_bus_range(node);
+    let Some(ranges) = fdt_get_ranges(node) else { return };
 
-    let host_bridge = HostBridge {
-        bus_range: get_bus_range(node),
-        ecam_base: mmio_window.starting_address.cast_mut(),
+    let mut host_bridge = HostBridge {
+        ecam_base: cam_window.starting_address.cast_mut(),
+        bus_range,
+        ranges,
     };
 
     log::debug!(
@@ -671,10 +708,12 @@ fn init(_fdt: &fdt::Fdt, node: &fdt::node::FdtNode) {
         host_bridge.bus_range
     );
 
+    // TODO: All buses don't need to be scanned. We can scan the first bus and only
+    // traverse deeper when we find a PCI-PCI bridge.
     for (bus, dev) in busdev_iter() {
-        if probe(&host_bridge, bus, dev, 0) {
+        if probe(&mut host_bridge, bus, dev, 0) {
             for func in 1..=7 {
-                probe(&host_bridge, bus, dev, func);
+                probe(&mut host_bridge, bus, dev, func);
             }
         }
     }
@@ -689,3 +728,119 @@ static PCIE_DRIVER: super::DeviceDriver = super::DeviceDriver {
     pci_compat: None,
     pci_init: None,
 };
+
+fn fdt_parse_cells(data: &[BigEndianU32]) -> u64 {
+    data.iter().fold(0, |sum, x| (sum << 32) | x.get() as u64)
+}
+
+fn fdt_get_ranges(node: &fdt::node::FdtNode) -> Option<Vec<Range>> {
+    let prop = node.property("ranges")?;
+
+    let cell_sizes = node.cell_sizes();
+    let pci_cells = cell_sizes.address_cells;
+    let size_cells = cell_sizes.size_cells;
+    // XXX: Might be better to assume 2, since we only support 64-bit?
+    let addr_cells = size_cells;
+
+    // The property should provide at least one range describing Memory Space.
+    if prop.value.len() < pci_cells + addr_cells + size_cells {
+        return None;
+    }
+
+    #[allow(clippy::cast_ptr_alignment)]
+    // SAFETY: Property values in the DTB are always aligned on a cell boundary (4 bytes).
+    let data = unsafe {
+        core::slice::from_raw_parts(
+            prop.value.as_ptr().cast::<BigEndianU32>(),
+            prop.value.len() / 4,
+        )
+    };
+
+    let mut ranges = vec![];
+
+    let chunk_size = pci_cells + addr_cells + size_cells;
+    for chunk in data.chunks(chunk_size) {
+        let phys_hi = chunk[0].get();
+
+        let bus = (phys_hi >> 16) as u8;
+        let dev = ((phys_hi >> 11) & 0x1f) as u8;
+        let func = ((phys_hi >> 8) & 0x7) as u8;
+        let reg = phys_hi as u8;
+
+        let pci_addr = fdt_parse_cells(&chunk[1..][..pci_cells - 1]);
+        let cpu_addr = fdt_parse_cells(&chunk[pci_cells..][..addr_cells]);
+        let cpu_size = fdt_parse_cells(&chunk[pci_cells + addr_cells..][..size_cells]);
+
+        ranges.push(Range {
+            flags: RangeFlags::from_phys_hi(phys_hi),
+            addr_space: AddressSpace::from_phys_hi(phys_hi),
+            dev_addr: (bus, dev, func, reg),
+            pci_addr,
+            cpu_addr,
+            cpu_size,
+            current_position: cpu_addr as usize,
+            remaining_capacity: cpu_size as usize,
+        });
+    }
+
+    Some(ranges)
+}
+
+#[derive(Clone, Debug)]
+struct Range {
+    flags: RangeFlags,
+    addr_space: AddressSpace,
+    dev_addr: (u8, u8, u8, u8),
+    pci_addr: u64,
+    cpu_addr: u64,
+    cpu_size: u64,
+
+    current_position: usize,
+    remaining_capacity: usize,
+}
+
+impl Range {
+    fn try_allocate(&mut self, size: usize, align: usize) -> Option<usize> {
+        let align_offset = align.wrapping_sub(self.current_position) & (align - 1);
+        if size + align_offset > self.remaining_capacity {
+            return None;
+        }
+
+        let base = self.current_position + align_offset;
+        self.current_position = base + size;
+        self.remaining_capacity -= align_offset + size;
+
+        Some(base)
+    }
+}
+
+bitflags::bitflags! {
+    #[repr(transparent)]
+    struct RangeFlags : u8 {
+        const NON_RELOCATABLE = 0x80;
+        const PREFETCHABLE    = 0x40;
+        const TRUNCATED       = 0x20;
+    }
+}
+
+impl RangeFlags {
+    const fn from_phys_hi(phys_hi: u32) -> RangeFlags {
+        // SAFETY: I say it is fine, therefore it is fine.
+        unsafe { Self::from_bits_unchecked((phys_hi >> 24) as u8) }
+    }
+}
+
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AddressSpace {
+    Config = 0b00,
+    Io = 0b01,
+    Memory32 = 0b10,
+    Memory64 = 0b11,
+}
+
+impl AddressSpace {
+    fn from_phys_hi(phys_hi: u32) -> AddressSpace {
+        unsafe { core::mem::transmute(((phys_hi >> 24) & 0x3) as u8) }
+    }
+}

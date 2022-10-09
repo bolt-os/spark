@@ -43,7 +43,7 @@ checksum = "22030e2c5a68ec659fde1e949a745124b48e6fa8b045b7ed5bd1fe4ccc5c4e5d"
 [[package]]
 name = "libsa"
 version = "0.1.0"
-source = "git+https://github.com/bolt-os/libsa#ba965a1fe7d138eafd8413f575ab4eb1dbcf0538"
+source = "git+https://github.com/bolt-os/libsa#b5f0a9af7e6cd1426418b7e5f9678f97b3e00fd3"
 
 [[package]]
 name = "limine"
@@ -55,9 +55,9 @@ dependencies = [
 
 [[package]]
 name = "lock_api"
-version = "0.4.8"
+version = "0.4.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9f80bf5aacaf25cbfc8210d1cfb718f2bf3b11c4c54e5afe36c236853a8ec390"
+checksum = "435011366fe56583b16cf956f9df0095b405b82d76425bc8981c0e22e60ec4df"
 dependencies = [
  "autocfg",
  "scopeguard",
@@ -110,9 +110,9 @@ dependencies = [
 
 [[package]]
 name = "unwinding"
-version = "0.1.4"
+version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "76b094d871608c32cdc2cc06ade39d8dc8c99ce95cbc528c1dcf7434319a1faf"
+checksum = "a68d24ef3fb840b7807a0d1f33c4a7adc50b39129574b8a295daa6ccda38a83b"
 dependencies = [
  "gimli",
 ]

@@ -36,24 +36,24 @@
     default_alloc_error_handler,
     prelude_import,
     asm_sym,                            // https://github.com/rust-lang/rust/issues/93333
-    let_else,                           // https://github.com/rust-lang/rust/issues/87335
+    let_chains,                         // https://github.com/rust-lang/rust/issues/53667
     naked_functions,                    // https://github.com/rust-lang/rust/issues/32408
     new_uninit,                         // https://github.com/rust-lang/rust/issues/63291
     once_cell,                          // https://github.com/rust-lang/rust/issues/74465
     pointer_is_aligned,                 // https://github.com/rust-lang/rust/issues/96284
     strict_provenance,                  // https://github.com/rust-lang/rust/issues/95228
     sync_unsafe_cell,                   // https://github.com/rust-lang/rust/issues/95439
-    let_chains                          // https://github.com/rust-lang/rust/issues/53667
 )]
 #![reexport_test_harness_main = "test_main"]
 #![test_runner(test::runner)]
-#![warn(clippy::cargo, clippy::pedantic, clippy::undocumented_unsafe_blocks)]
+#![warn(clippy::cargo, clippy::pedantic)]
 #![deny(
     clippy::semicolon_if_nothing_returned,
     clippy::debug_assert_with_mut_call
 )]
 #![allow(
     clippy::cast_lossless,
+    clippy::cast_possible_truncation,
     clippy::enum_glob_use,
     clippy::inline_always,
     clippy::items_after_statements,
@@ -255,42 +255,54 @@ fn print_fdt(fdt: &fdt::Fdt) {
         for prop in node.properties() {
             (0..*depth).for_each(|_| print!("    "));
 
-            print!("{} = ", prop.name);
+            print!("{}", prop.name);
             match prop.name {
-                "interrupt-map"
-                    if node
-                        .compatible()
-                        .unwrap()
-                        .all()
-                        .any(|c| c == "pci-host-ecam-generic") =>
-                {
-                    let mut chunks = prop
-                        .value
-                        .chunks_exact(4)
-                        .map(|c| u32::from_be_bytes(c.try_into().unwrap()));
-                    println!("[");
-                    while let Some(x) = chunks.next() {
-                        let _y = chunks.next().unwrap();
-                        let _z = chunks.next().unwrap();
-                        let intn = chunks.next().unwrap();
-                        let ctrl = chunks.next().unwrap();
-                        let cintr = chunks.next().unwrap();
-
-                        let bus = (x >> 16) & 0xff;
-                        let dev = (x >> 11) & 0x1f;
-                        let func = (x >> 8) & 0x7;
-
-                        println!("  {bus:02x}:{dev:02x}:{func:02x} INT{} on controller {ctrl:#x}, vector {cintr}", (b'A' - 1 + intn as u8) as char);
-                    }
-                }
+                //                 "interrupt-map"
+                //                     if node
+                //                         .compatible()
+                //                         .unwrap()
+                //                         .all()
+                //                         .any(|c| c == "pci-host-ecam-generic") =>
+                //                 {
+                //                     let mut chunks = prop
+                //                         .value
+                //                         .chunks_exact(4)
+                //                         .map(|c| u32::from_be_bytes(c.try_into().unwrap()));
+                //                     println!("[");
+                //                     while let Some(x) = chunks.next() {
+                //                         let _y = chunks.next().unwrap();
+                //                         let _z = chunks.next().unwrap();
+                //                         let intn = chunks.next().unwrap();
+                //                         let ctrl = chunks.next().unwrap();
+                //                         let cintr = chunks.next().unwrap();
+                //
+                //                         let bus = (x >> 16) & 0xff;
+                //                         let dev = (x >> 11) & 0x1f;
+                //                         let func = (x >> 8) & 0x7;
+                //
+                //                         println!("  {bus:02x}:{dev:02x}:{func:02x} INT{} on controller {ctrl:#x}, vector {cintr}", (b'A' - 1 + intn as u8) as char);
+                //                     }
+                //                 }
                 "compatible" => {
-                    println!("{:?}", node.compatible().unwrap().all().collect::<Vec<_>>());
+                    println!(
+                        " = {};",
+                        node.compatible()
+                            .unwrap()
+                            .all()
+                            .map(|c| format!("{c:?}"))
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    );
                 }
                 "stdout-path" | "riscv,isa" | "status" | "mmu-type" | "model" | "device_type" => {
-                    println!("{}", prop.as_str().unwrap());
+                    println!(" = {};", prop.as_str().unwrap());
                 }
                 _ => {
-                    print!("[");
+                    if prop.value.is_empty() {
+                        println!(";");
+                        continue;
+                    }
+                    print!(" = <");
                     let mut first = true;
                     prop.value.chunks_exact(4).for_each(|c| {
                         if !first {
@@ -302,7 +314,7 @@ fn print_fdt(fdt: &fdt::Fdt) {
                             u32::from_be_bytes(<[u8; 4]>::try_from(c).unwrap())
                         );
                     });
-                    println!("]");
+                    println!(">;");
                 }
             }
         }
