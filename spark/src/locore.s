@@ -28,6 +28,7 @@
  * SPDX-License-Identifier: BSD-3-Clause
  */
 
+.pushsection .text
 
 .section .text._start,"ax",@progbits
 .global _start
@@ -113,7 +114,7 @@ error:
         addi    sp, sp, 8*32
 .endm
 
-.pushsection .text.trap_entry,"ax",@progbits
+.section .text.trap_entry,"ax",@progbits
 .p2align 4
 .global trap_entry
 trap_entry:
