@@ -30,13 +30,15 @@
 
 #![allow(clippy::cast_possible_truncation)]
 
-use super::{device_drivers, DeviceDriver};
-pub use bar::{Bar, BarKind};
+use super::device_drivers;
+use crate::dev::match_fdt_node;
+use anyhow::anyhow;
 use core::{fmt, ops::RangeInclusive};
 use device::DeviceKind;
 use ecam::Ecam;
 use libsa::endian::BigEndianU32;
 
+pub use bar::{Bar, BarKind};
 pub use device::{CommandRegister, Device, DeviceIdent};
 
 mod bar {
@@ -415,6 +417,28 @@ mod device {
 
             unsafe { self.write_command_register(cmd) };
         }
+
+        pub fn enable_io_space(&self) {
+            self.update_command_register(|cmd| *cmd |= CommandRegister::IO_SPACE);
+        }
+
+        pub fn enable_memory_space(&self) {
+            self.update_command_register(|cmd| *cmd |= CommandRegister::MEMORY_SPACE);
+        }
+
+        pub fn enable_bus_master(&self) {
+            self.update_command_register(|cmd| *cmd |= CommandRegister::BUS_MASTER);
+        }
+
+        pub fn enable_special_cycles(&self) {
+            self.update_command_register(|cmd| *cmd |= CommandRegister::SPECIAL_CYCLES);
+        }
+
+        pub fn enable_memory_write_and_invalidate(&self) {
+            self.update_command_register(|cmd| {
+                *cmd |= CommandRegister::MEMORY_WRITE_AND_INVALIDATE_ENABLE;
+            });
+        }
     }
 
     bitflags::bitflags! {
@@ -645,9 +669,12 @@ fn probe(host: &mut HostBridge, bus: u8, dev: u8, func: u8) -> bool {
     alloc_resources(host, &mut device);
 
     // check for a driver
-    if let Some(driver) = match_pci_driver(&device) {
-        let init = driver.pci_init.unwrap();
-        init(&device);
+    for driver in device_drivers() {
+        if let Some(init) = driver.probe_pci {
+            if let Err(error) = init(&device) {
+                log::error!("{error}");
+            }
+        }
     }
 
     device.multifunc
@@ -670,15 +697,6 @@ impl DriverCompat {
     }
 }
 
-fn match_pci_driver(dev: &Device) -> Option<&'static DeviceDriver> {
-    device_drivers()
-        .iter()
-        .find(|driver| match driver.pci_compat {
-            Some(driver_compat) => driver_compat.iter().any(|compat| compat.matches(dev)),
-            None => false,
-        })
-}
-
 fn fdt_get_bus_range(node: &fdt::node::FdtNode) -> RangeInclusive<u8> {
     let Some(property) = node.property("bus-range") else { return 0..=255 };
     let bus_range = property.value;
@@ -691,10 +709,25 @@ fn fdt_get_bus_range(node: &fdt::node::FdtNode) -> RangeInclusive<u8> {
     start_bus..=end_bus
 }
 
-fn init(_fdt: &fdt::Fdt, node: &fdt::node::FdtNode) {
-    let Some(cam_window) = node.reg().and_then(|mut reg| reg.next()) else { return };
+#[used]
+#[link_section = ".device_drivers"]
+static PCIE_DRIVER: super::DeviceDriver = super::DeviceDriver {
+    name: "pcie",
+    probe_fdt: Some(fdt_init),
+    probe_pci: None,
+};
+
+fn fdt_init(node: &fdt::node::FdtNode) -> crate::Result<()> {
+    if !match_fdt_node(node, &["pci-host-ecam-generic", "pci-host-cam-generic"]) {
+        return Ok(());
+    }
+
+    let cam_window = node
+        .reg()
+        .and_then(|mut r| r.next())
+        .ok_or_else(|| anyhow!("missing `reg` property"))?;
     let bus_range = fdt_get_bus_range(node);
-    let Some(ranges) = fdt_get_ranges(node) else { return };
+    let ranges = fdt_get_ranges(node).ok_or_else(|| anyhow!("missing `ranges`"))?;
 
     let mut host_bridge = HostBridge {
         ecam_base: cam_window.starting_address.cast_mut(),
@@ -717,17 +750,9 @@ fn init(_fdt: &fdt::Fdt, node: &fdt::node::FdtNode) {
             }
         }
     }
-}
 
-#[used]
-#[link_section = ".device_drivers"]
-static PCIE_DRIVER: super::DeviceDriver = super::DeviceDriver {
-    name: "pcie",
-    fdt_compat: Some(&["pci-host-ecam-generic", "pci-host-cam-generic"]),
-    fdt_init: Some(init),
-    pci_compat: None,
-    pci_init: None,
-};
+    Ok(())
+}
 
 fn fdt_parse_cells(data: &[BigEndianU32]) -> u64 {
     data.iter().fold(0, |sum, x| (sum << 32) | x.get() as u64)

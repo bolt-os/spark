@@ -28,47 +28,28 @@
  * SPDX-License-Identifier: BSD-3-Clause
  */
 
-pub mod block;
-pub mod fdt;
-pub mod fw_cfg;
-pub mod pcie;
+use core::cell::SyncUnsafeCell;
 
 use ::fdt as libfdt;
 
-use core::mem::size_of;
-use libsa::extern_sym;
+static FDT: SyncUnsafeCell<Option<libfdt::Fdt>> = SyncUnsafeCell::new(None);
 
-pub struct DeviceDriver {
-    pub name: &'static str,
-    pub probe_pci: Option<fn(&pcie::Device) -> crate::Result<()>>,
-    pub probe_fdt: Option<fn(&libfdt::node::FdtNode) -> crate::Result<()>>,
-}
+pub fn init(hartid: usize, dtb_ptr: *mut u8) -> &'static libfdt::Fdt<'static> {
+    // "Install" the FDT.
+    // The reference returned here has a 'static lifetime.
+    let fdt = unsafe {
+        let fdt = libfdt::Fdt::from_ptr(dtb_ptr).unwrap();
+        FDT.get().write_volatile(Some(fdt));
+        (*FDT.get()).as_ref().unwrap()
+    };
 
-pub fn device_drivers() -> &'static [DeviceDriver] {
-    let drivers_start = extern_sym!(__device_drivers as DeviceDriver);
-    let drivers_end = extern_sym!(__end_device_drivers as DeviceDriver);
-    let len = (drivers_end.addr() - drivers_start.addr()) / size_of::<DeviceDriver>();
+    let bsp_node = fdt
+        .cpus()
+        .find(|node| node.ids().first() == hartid)
+        .expect("no matching /cpus node for the boot hart");
 
-    unsafe { core::slice::from_raw_parts(drivers_start, len) }
-}
+    let timebase_freq = bsp_node.timebase_frequency();
+    crate::time::init(timebase_freq as u64);
 
-pub fn match_fdt_node(node: &libfdt::node::FdtNode, matches: &[&str]) -> bool {
-    if let Some(compat) = node.compatible() {
-        compat.all().any(|c| matches.contains(&c))
-    } else {
-        false
-    }
-}
-
-pub fn init(fdt: &libfdt::Fdt) {
-    log::debug!("scanning device tree");
-    for node in fdt.all_nodes() {
-        for driver in device_drivers() {
-            if let Some(init) = driver.probe_fdt {
-                if let Err(error) = init(&node) {
-                    log::error!("{}: {error}", driver.name);
-                }
-            }
-        }
-    }
+    fdt
 }

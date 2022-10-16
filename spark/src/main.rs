@@ -36,11 +36,14 @@
     default_alloc_error_handler,
     prelude_import,
     asm_sym,                            // https://github.com/rust-lang/rust/issues/93333
+    int_log,                            // https://github.com/rust-lang/rust/issues/70887
     let_chains,                         // https://github.com/rust-lang/rust/issues/53667
     naked_functions,                    // https://github.com/rust-lang/rust/issues/32408
     new_uninit,                         // https://github.com/rust-lang/rust/issues/63291
     once_cell,                          // https://github.com/rust-lang/rust/issues/74465
+    pointer_byte_offsets,               // https://github.com/rust-lang/rust/issues/96283
     pointer_is_aligned,                 // https://github.com/rust-lang/rust/issues/96284
+    result_option_inspect,              // https://github.com/rust-lang/rust/issues/91345
     strict_provenance,                  // https://github.com/rust-lang/rust/issues/95228
     sync_unsafe_cell,                   // https://github.com/rust-lang/rust/issues/95439
 )]
@@ -91,7 +94,9 @@ mod panic;
 mod proto;
 mod rtld;
 mod test;
+mod time;
 
+pub use anyhow::Result;
 pub use mem::{pmm, vmm};
 
 use core::{
@@ -121,19 +126,31 @@ static DTB_PTR: AtomicPtr<u8> = AtomicPtr::new(ptr::null_mut());
 #[allow(clippy::not_unsafe_ptr_arg_deref, clippy::missing_panics_doc)]
 #[no_mangle]
 pub extern "C" fn spark_main(hartid: usize, dtb_ptr: *mut u8) -> ! {
-    DTB_PTR.store(dtb_ptr, Ordering::Relaxed);
-
+    // Initialize the logger
+    //  TODO: Use legacy SBI console until we probe for consoles.
     io::init();
 
-    let fdt = unsafe { fdt::Fdt::from_ptr(dtb_ptr) }.unwrap();
+    // Install the Device Tree
+    let fdt = dev::fdt::init(hartid, dtb_ptr);
 
-    pmm::init_from_fdt(&fdt, dtb_ptr);
-    // print_fdt(&fdt);
+    // TODO: the platform stuff in `fdt::init()` should be pulled out
+
+    // Bootstrap memory allocation
+    pmm::init_from_fdt(fdt, dtb_ptr);
+
+    // TODO: Probe console devices
+
+    // Probe the full device tree before we search for a boot partition
+    dev::init(fdt);
+
+    // TODO: Find boot partition, look for config
+
+    // TODO: Parse bootloader config and find boot entry
+    //  Eventually, this is where we'd start an interactive console.
+
+    DTB_PTR.store(dtb_ptr, Ordering::Relaxed);
 
     let mut vmspace = vmm::init_from_fdt(&fdt, hartid);
-
-    dev::init(&fdt);
-
     let fw_cfg = {
         let fdt_node = fdt.find_compatible(&["qemu,fw-cfg-mmio"]).unwrap();
         let mmio_window = fdt_node.reg().unwrap().next().unwrap();

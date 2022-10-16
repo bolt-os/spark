@@ -175,10 +175,10 @@ impl Port {
     pub const ATA_DEV_DRQ: u8 = 0x08;
 
     pub fn configure(&self) {
-        const FRE: u32 = 4;
-        const ST: u32 = 0;
-        const FR: u32 = 14;
-        const CR: u32 = 15;
+        const FRE: u32 = 1 << 4;
+        const ST: u32 = 1 << 0;
+        const FR: u32 = 1 << 14;
+        const CR: u32 = 1 << 15;
 
         // Stop command processing.
         self.command_status.write(LittleEndianU32::new(

@@ -1,7 +1,5 @@
-use crate::dev::{
-    pcie::{Device, DriverCompat},
-    DeviceDriver,
-};
+use crate::dev::{pcie::Device, DeviceDriver};
+use anyhow::anyhow;
 
 pub mod hba;
 
@@ -9,13 +7,8 @@ pub mod hba;
 #[link_section = ".device_drivers"]
 static AHCI_PCI_DRIVER: DeviceDriver = DeviceDriver {
     name: "ahci",
-    fdt_compat: None,
-    fdt_init: None,
-    pci_compat: Some(&[&DriverCompat {
-        class: 1,
-        subclass: Some(6),
-    }]),
-    pci_init: Some(Ahci::from_pci_device),
+    probe_fdt: None,
+    probe_pci: Some(Ahci::from_pci_device),
 };
 
 #[allow(dead_code)]
@@ -25,24 +18,32 @@ pub struct Ahci<'a> {
 }
 
 impl Ahci<'_> {
-    fn from_pci_device(device: &Device) {
+    fn from_pci_device(device: &Device) -> crate::Result<()> {
+        if device.ident.class != 1 || device.ident.subclass != 6 {
+            return Ok(());
+        }
+
         let pci_bar5 = device
             .bars()
             .nth(5)
-            .expect("AHCI device does not have 5th BAR");
+            .ok_or_else(|| anyhow!("AHCI device does not have 5th BAR"))?;
 
-        let mut block_devices = super::BLOCK_DEVICES.lock();
         // # Safety: AHCI spec promises this is valid.
         let hba_mem = unsafe { (pci_bar5.read_addr() as *mut hba::Memory).as_mut() }.unwrap();
+
+        device.enable_bus_master();
+        device.enable_memory_write_and_invalidate();
 
         hba_mem.iter_ports().for_each(|port| {
             if (port.sata_status.read().get() & hba::Port::SATA_STATUS_READY) > 0
                 && port.signature.read().get() == hba::Port::ATA_PORT_CLASS
             {
                 port.configure();
-                block_devices.push(Box::new(AhciPort { port }));
+                super::register_block_device(Box::new(AhciPort { port }));
             }
         });
+
+        Ok(())
     }
 }
 
