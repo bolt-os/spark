@@ -32,7 +32,8 @@ use crate::{pages_for, pmm, pmm::MAX_PHYS_ADDR};
 use alloc::collections::LinkedList;
 use core::{cmp, ptr, sync::atomic::Ordering};
 
-pub const PAGE_SIZE: usize = 4096;
+pub const PAGE_SHIFT: u32 = 12;
+pub const PAGE_SIZE: usize = 1 << PAGE_SHIFT;
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, PartialOrd)]
 pub enum PagingMode {
