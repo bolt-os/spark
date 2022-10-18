@@ -78,6 +78,10 @@ impl<'elf> Rtld<'elf> {
         self.reloc_base.wrapping_add(addr)
     }
 
+    fn reloc_addr_signed(&self, addr: isize) -> usize {
+        self.reloc_base.wrapping_add_signed(addr)
+    }
+
     pub fn check_image_ptr<T>(&self, ptr: *const T) -> bool {
         let obj_start = ptr.addr();
         let obj_end = obj_start + size_of::<T>();
@@ -249,7 +253,7 @@ fn resolve_relocations(object: &mut Rtld) {
         match reloc_entry.kind() {
             RelocKind::None => {}
             RelocKind::Relative => {
-                let value = object.reloc_addr(reloc_entry.addend as usize);
+                let value = object.reloc_addr_signed(reloc_entry.addend as isize);
                 unsafe { *(location as *mut usize) = value };
             }
             RelocKind::Irelative => object.has_ifuncs = true,
@@ -276,7 +280,7 @@ fn resolve_ifuncs(object: &mut Rtld) {
         .filter(|r| r.kind() == RelocKind::Irelative)
     {
         let location = object.reloc_addr(reloc_entry.offset as usize) as *mut usize;
-        let resolv = object.reloc_addr(reloc_entry.addend as usize) as *const IfuncResolver;
+        let resolv = object.reloc_addr_signed(reloc_entry.addend as isize) as *const IfuncResolver;
         unsafe { *location = (*resolv)() };
     }
 }
@@ -329,7 +333,7 @@ pub extern "C" fn _relocate(reloc_slide: usize, mut dyntab: *const elf::Dyn) -> 
             RelocKind::None => {}
             RelocKind::Relative => {
                 let target = reloc_slide.wrapping_add(relocation.offset as usize);
-                let value = reloc_slide.wrapping_add(relocation.addend as usize);
+                let value = reloc_slide.wrapping_add_signed(relocation.addend as isize);
                 unsafe { *(target as *mut usize) = value };
             }
             _ => return RELOC_ERROR,
