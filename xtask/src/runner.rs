@@ -4,17 +4,21 @@ use std::{ffi::OsString, path::PathBuf, process::Command};
 
 #[derive(ArgEnum, Clone, Copy)]
 pub enum BlockDriver {
-    AHCI,
-    NVME,
-    VirtIO,
+    None,
+    Ahci,
+    Nvme,
+    Virtio,
+    VirtioPci,
 }
 
 impl core::fmt::Debug for BlockDriver {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter.write_str(match self {
-            BlockDriver::AHCI => "ahci",
-            BlockDriver::NVME => "nvme",
-            BlockDriver::VirtIO => "virtio-blk-pci",
+            BlockDriver::None => "none",
+            BlockDriver::Ahci => "ahci",
+            BlockDriver::Nvme => "nvme",
+            BlockDriver::Virtio => "virtio-blk-device",
+            BlockDriver::VirtioPci => "virtio-blk-pci",
         })
     }
 }
@@ -26,6 +30,10 @@ pub struct Options {
 
     #[clap(long)]
     kernel: Option<PathBuf>,
+
+    /// Machine to emulate.
+    #[clap(long, default_value = "virt,aclint=on")]
+    machine: String,
 
     /// Number of CPUs to emulate.
     #[clap(long, default_value = "4")]
@@ -47,7 +55,7 @@ pub struct Options {
     no_shutdown: bool,
 
     /// Which type of block driver to use for root drive.
-    #[clap(arg_enum, long, default_value = "virt-io")]
+    #[clap(arg_enum, long, default_value = "virtio")]
     block: BlockDriver,
 
     #[clap(last = true)]
@@ -72,6 +80,7 @@ pub fn run(ctx: &BuildCtx, options: Options) -> anyhow::Result<()> {
             general_options: options.general_options.clone(),
             clippy: false,
         },
+        false,
     )?;
 
     let spark_elf = PathBuf::from(format!(
@@ -85,7 +94,7 @@ pub fn run(ctx: &BuildCtx, options: Options) -> anyhow::Result<()> {
 
     #[rustfmt::skip]
     qemu.args([
-        "-machine", "virt,aclint=on",
+        "-machine", &options.machine,
         "-cpu", "rv64,svpbmt=true",
         "-m", &options.ram.to_string(),
         "-smp", &options.smp.to_string(),
@@ -97,11 +106,12 @@ pub fn run(ctx: &BuildCtx, options: Options) -> anyhow::Result<()> {
     }
 
     if options.log {
-        qemu.args(["-d", "int,guest_errors", "-D", "qemu-log.txt"]);
+        qemu.args(["-d", "int,guest_errors", "-D", ".debug/qemu-log.txt"]);
     }
 
     match options.block {
-        BlockDriver::AHCI => {
+        BlockDriver::None => {}
+        BlockDriver::Ahci => {
             qemu.args([
                 "-device",
                 "ahci,id=ahci",
@@ -109,10 +119,13 @@ pub fn run(ctx: &BuildCtx, options: Options) -> anyhow::Result<()> {
                 "ide-hd,drive=disk0,bus=ahci.0",
             ]);
         }
-        BlockDriver::NVME => {
+        BlockDriver::Nvme => {
             qemu.args(["-device", "nvme,serial=deadbeef,drive=disk0"]);
         }
-        BlockDriver::VirtIO => {
+        BlockDriver::Virtio => {
+            qemu.args(["-device", "virtio-blk-device,serial=deadbeef,drive=disk0"]);
+        }
+        BlockDriver::VirtioPci => {
             qemu.args(["-device", "virtio-blk-pci,serial=deadbeef,drive=disk0"]);
         }
     }
