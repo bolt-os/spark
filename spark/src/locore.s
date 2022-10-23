@@ -88,48 +88,97 @@ error:
 
 .altmacro
 
-.macro _SAVE_GP_REG reg
-        sd      x\reg, (8*\reg)(sp)
+.macro STORE_GP_REG reg
+    .if reg != 2
+        sd      x\reg, (8 * \reg)(sp)
+    .endif
 .endm
 
-.macro _RESTORE_GP_REG reg
-        ld      x\reg, (8*\reg)(sp)
+.macro LOAD_GP_REG reg
+    .if reg != 2
+        ld      x\reg, (8 * \reg)(sp)
+    .endif
 .endm
 
-.macro SAVE_GP_REGS
-        addi    sp, sp, -(8*32)
+.macro STORE_FP_REG reg
+        fsd     f\reg, (8 * (32 + \reg))(sp)
+.endm
+
+.macro LOAD_FP_REG reg
+        fld     f\reg, (8 * (32 + \reg))(sp)
+.endm
+
+.macro STORE_REGS
 .set reg, 0
 .rept 32
-        _SAVE_GP_REG    %reg
+        STORE_GP_REG    %reg
+        STORE_FP_REG    %reg
 .set reg, reg + 1
 .endr
 .endm
 
-.macro RESTORE_GP_REGS
+.macro LOAD_REGS
 .set reg, 0
 .rept 32
-        _RESTORE_GP_REG %reg
+        LOAD_GP_REG    %reg
+        LOAD_FP_REG    %reg
 .set reg, reg + 1
 .endr
-        addi    sp, sp, 8*32
 .endm
 
+
+// Trap Entry Point
+//
+// Due to restrictions of the `stvec` CSR, this entry point must be aligned on a 4-byte boundary.
 .section .text.trap_entry,"ax",@progbits
-.p2align 4
 .global trap_entry
+.align 4
 trap_entry:
-        SAVE_GP_REGS
+        // TODO: What if the stack is fucked?
 
-        mv      s0, sp
+        addi    sp, sp, -(8 * 68)
+        STORE_REGS
+
+        csrr    t0, sstatus
+        csrr    t1, scause
+        csrr    t2, sepc
+        csrr    t3, stval
+        sd      t0, (8 * (64 + 0))(sp)
+        sd      t1, (8 * (64 + 1))(sp)
+        sd      t2, (8 * (64 + 2))(sp)
+        sd      t3, (8 * (64 + 3))(sp)
+
+        // Prepare to enter Rust.
+        // Align the stack to 8 bytes, stash the previous stack pointer (and pointer to the trap
+        // frame) in a saved register that won't be clobbered by the calling convention.
+        mv      s1, sp
         andi    sp, sp, ~0xf
+
+        // Make it look as if the trapped code "called" this function.
+        // This stops stack traces from missing the trapped function.
+        addi    sp, sp, -16
+        sd      t2, 8(sp)
+        sd      fp, 0(sp)
+        addi    fp, sp, 16
+
+        mv      a0, s1
         call    trap_handler
-        mv      sp, s0
 
-        csrr    t0, sepc
-        addi    t0, t0, 4
-        csrw    sepc, t0
+        // Restore the old stack pointer.
+        mv      sp, s1
 
-        RESTORE_GP_REGS
+        // It's unlikely that we return, since we don't use interrupts all traps will end up being
+        // (fatal) exceptions. In case we ever do, reload `sstatus` and `sepc` so the trap handler
+        // can make any necessary changes.
+        ld      t0, (8 * (64 + 0))(sp)
+        ld      t1, (8 * (64 + 2))(sp)
+        csrw    sstatus, t0
+        csrw    sepc, t1
+
+        // Reload all the registers we saved earlier and return to the trapped code.
+        LOAD_REGS
+        addi    sp, sp, (8 * 68)
+
         sret
 
 .popsection

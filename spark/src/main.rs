@@ -57,6 +57,7 @@
 #![allow(
     clippy::cast_lossless,
     clippy::cast_possible_truncation,
+    clippy::cast_ptr_alignment,
     clippy::enum_glob_use,
     clippy::inline_always,
     clippy::items_after_statements,
@@ -95,6 +96,7 @@ mod proto;
 mod rtld;
 mod test;
 mod time;
+mod trap;
 
 pub use anyhow::Result;
 pub use mem::{pmm, vmm};
@@ -112,13 +114,6 @@ pub fn hcf() -> ! {
     loop {
         core::hint::spin_loop();
     }
-}
-
-/// # Safety
-#[no_mangle]
-pub unsafe extern "C" fn trap_handler() {
-    println!("trap!");
-    hcf();
 }
 
 static DTB_PTR: AtomicPtr<u8> = AtomicPtr::new(ptr::null_mut());
@@ -150,7 +145,7 @@ pub extern "C" fn spark_main(hartid: usize, dtb_ptr: *mut u8) -> ! {
 
     DTB_PTR.store(dtb_ptr, Ordering::Relaxed);
 
-    let mut vmspace = vmm::init_from_fdt(&fdt, hartid);
+    let mut vmspace = vmm::init_from_fdt(fdt, hartid);
     let fw_cfg = {
         let fdt_node = fdt.find_compatible(&["qemu,fw-cfg-mmio"]).unwrap();
         let mmio_window = fdt_node.reg().unwrap().next().unwrap();
@@ -176,7 +171,7 @@ pub extern "C" fn spark_main(hartid: usize, dtb_ptr: *mut u8) -> ! {
     log::info!("reloc slide:   {:#018x}", rtld_object.reloc_base);
     log::info!("entry point:   {:#018x}", kernel_elf.entry_point());
 
-    proto::handle_requests(hartid, &rtld_object, &vmspace, &fdt);
+    proto::handle_requests(hartid, &rtld_object, &vmspace, fdt);
 
     let tp = rtld_object.allocate_tls(hartid, &mut vmspace);
 
