@@ -45,6 +45,9 @@ pub struct SparkBuildOptions {
 
     #[clap(short, long)]
     pub verbose: bool,
+
+    #[clap(long)]
+    pub ci: bool,
 }
 
 pub struct BuildCtx {
@@ -105,6 +108,7 @@ impl BuildCtx {
 #[clap(rename_all = "snake_case", setting = AppSettings::DisableVersionFlag)]
 enum Arguments {
     Build(build::Options),
+    Doc(build::Options),
     Run(runner::Options),
 }
 
@@ -112,8 +116,9 @@ fn main() -> anyhow::Result<()> {
     let ctx = BuildCtx::new()?;
 
     match Arguments::parse() {
-        Arguments::Build(build_options) => build::build(&ctx, build_options)?,
+        Arguments::Build(build_options) => build::build(&ctx, build_options, false)?,
         Arguments::Run(run_options) => runner::run(&ctx, run_options)?,
+        Arguments::Doc(build_options) => build::build(&ctx, build_options, true)?,
     }
 
     Ok(())
