@@ -1,0 +1,53 @@
+
+name: Spark CI
+
+"on":
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - "**"
+
+jobs:
+  main:
+    name: main
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: checkout the source
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 1
+
+      - name: fetch the rust toolchain
+        uses: actions-rs/toolchain@v1
+        with:
+          profile: minimal
+          toolchain: nightly
+          components: clippy, rustfmt, rust-src
+
+      - name: install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y llvm
+
+      - name: build bootloader
+        run: cargo xtask build --ci
+
+      - name: deploy build artifacts
+        uses: actions/upload-artifact@v3
+        with:
+          path: .hdd/
+
+      - name: build the documentation
+        run: cargo xtask doc --ci
+
+      - name: publish documentation
+        uses: peaceiris/actions-gh-pages@v3
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        with:
+          deploy_key: ${{ secrets.DOCS_DEPLOY_KEY }}
+          external_repository: bolt-os/spark-docs
+          publish_branch: main
+          publish_dir: target/riscv64gc-unknown-none/doc

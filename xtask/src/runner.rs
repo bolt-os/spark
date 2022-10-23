@@ -83,6 +83,10 @@ pub fn run(ctx: &BuildCtx, options: Options) -> anyhow::Result<()> {
         false,
     )?;
 
+    if !ctx.shell.path_exists(".hdd/disk0.img") {
+        xshell::cmd!(ctx.shell, "qemu-img create -f raw .hdd/disk0.img 256M").run()?;
+    }
+
     let spark_elf = PathBuf::from(format!(
         ".hdd/spark-{}-{}.elf",
         options.target,

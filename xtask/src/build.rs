@@ -30,10 +30,6 @@ pub fn build(ctx: &BuildCtx, options: Options, document: bool) -> anyhow::Result
                 ctx.shell.create_dir(root_dir)?;
             }
         }
-
-        if !ctx.shell.path_exists(".hdd/disk0.img") {
-            cmd!(ctx.shell, "qemu-img create -f raw .hdd/disk0.img 256M").run()?;
-        }
     }
 
     /* bootloader */
