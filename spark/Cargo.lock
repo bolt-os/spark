@@ -4,9 +4,9 @@ version = 3
 
 [[package]]
 name = "anyhow"
-version = "1.0.65"
+version = "1.0.66"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "98161a4e3e2184da77bb14f02184cdd111e83bbbcc9979dfee3c44b9a85f5602"
+checksum = "216261ddc8289130e551ddcd5ce8a064710c0d064a4d2895c67151c92b5443f6"
 
 [[package]]
 name = "autocfg"
@@ -23,7 +23,7 @@ checksum = "bef38d45163c2f1dde094a7dfd33ccf595c92905c8f8f4fdc18d06fb1037718a"
 [[package]]
 name = "bolt-libelf"
 version = "0.1.0"
-source = "git+https://github.com/bolt-os/libelf#2e6b74f7028b9f73ca07465ef8e049ab9cc4d218"
+source = "git+https://github.com/bolt-os/libelf#4bcce67b7b1f071dba218950f2c8a19e33c9c464"
 dependencies = [
  "bitflags",
 ]

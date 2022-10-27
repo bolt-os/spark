@@ -89,7 +89,7 @@ pub fn build(ctx: &BuildCtx, options: Options, document: bool) -> anyhow::Result
         }
     }
 
-    if !document {
+    if !document && !options.clippy {
         let profile = if options.release { "release" } else { "debug" };
         let target_elf = format!("target/riscv64gc-unknown-none/{profile}/spark",);
         let spark_elf = format!(".hdd/spark-{}-{profile}.elf", options.target);
