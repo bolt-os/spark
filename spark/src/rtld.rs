@@ -251,12 +251,12 @@ fn resolve_relocations(object: &mut Rtld) {
         let location = object.reloc_addr(reloc_entry.offset as usize);
 
         match reloc_entry.kind() {
-            RelocKind::None => {}
-            RelocKind::Relative => {
+            RelocKind::RISCV_NONE => {}
+            RelocKind::RISCV_RELATIVE => {
                 let value = object.reloc_addr_signed(reloc_entry.addend as isize);
                 unsafe { *(location as *mut usize) = value };
             }
-            RelocKind::Irelative => object.has_ifuncs = true,
+            RelocKind::RISCV_IRELATIVE => object.has_ifuncs = true,
             _ => panic!(),
         }
     }
@@ -277,7 +277,7 @@ fn resolve_ifuncs(object: &mut Rtld) {
 
     for reloc_entry in relocation_table
         .iter()
-        .filter(|r| r.kind() == RelocKind::Irelative)
+        .filter(|r| r.kind() == RelocKind::RISCV_IRELATIVE)
     {
         let location = object.reloc_addr(reloc_entry.offset as usize) as *mut usize;
         let resolv = object.reloc_addr_signed(reloc_entry.addend as isize) as *const IfuncResolver;
@@ -330,8 +330,8 @@ pub extern "C" fn _relocate(reloc_slide: usize, mut dyntab: *const elf::Dyn) -> 
 
     for relocation in relocation_table {
         match relocation.kind() {
-            RelocKind::None => {}
-            RelocKind::Relative => {
+            RelocKind::RISCV_NONE => {}
+            RelocKind::RISCV_RELATIVE => {
                 let target = reloc_slide.wrapping_add(relocation.offset as usize);
                 let value = reloc_slide.wrapping_add_signed(relocation.addend as isize);
                 unsafe { *(target as *mut usize) = value };
