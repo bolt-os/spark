@@ -12,23 +12,18 @@ SECTIONS {
     }
     PROVIDE(__etext = .);
 
-    .rodata                 : {
-        *(.rodata .rodata.*)
-        *(.data.rel.ro*)
-    }
+    .rodata                 : { *(.rodata .rodata.*) }
     .eh_frame_hdr           : { KEEP(*(.eh_frame_hdr)) }
     PROVIDE(__eh_frame = .);
     .eh_frame               : { KEEP(*(.eh_frame)) }
-    .got                    : { *(.got) }
-    .dynamic                : { *(.dynamic) }
     .dynsym                 : { *(.dynsym) }
     .dynstr                 : { *(.dynstr) }
     .rela                   : { *(.rela*) }
+    .dynamic                : { *(.dynamic) }
+    .got                    : { *(.got) }
+    .data.rel.ro            : { *(.data.rel.ro*) }
     .data                   : {
         *(.data .data.*)
-        PROVIDE(__device_drivers = .);
-        KEEP(*(.device_drivers))
-        PROVIDE(__end_device_drivers = .);
         *(.sdata .sdata.*)
     }
     PROVIDE(__global_pointer$ = .);

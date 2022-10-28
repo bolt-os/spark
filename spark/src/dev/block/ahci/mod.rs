@@ -4,7 +4,7 @@ use anyhow::anyhow;
 pub mod hba;
 
 #[used]
-#[link_section = ".device_drivers"]
+#[link_section = "device_drivers"]
 static AHCI_PCI_DRIVER: DeviceDriver = DeviceDriver {
     name: "ahci",
     probe_fdt: None,

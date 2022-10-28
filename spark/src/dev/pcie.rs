@@ -710,7 +710,7 @@ fn fdt_get_bus_range(node: &fdt::node::FdtNode) -> RangeInclusive<u8> {
 }
 
 #[used]
-#[link_section = ".device_drivers"]
+#[link_section = "device_drivers"]
 static PCIE_DRIVER: super::DeviceDriver = super::DeviceDriver {
     name: "pcie",
     probe_fdt: Some(fdt_init),

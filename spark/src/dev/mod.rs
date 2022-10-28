@@ -45,8 +45,8 @@ pub struct DeviceDriver {
 }
 
 pub fn device_drivers() -> &'static [DeviceDriver] {
-    let drivers_start = extern_sym!(__device_drivers as DeviceDriver);
-    let drivers_end = extern_sym!(__end_device_drivers as DeviceDriver);
+    let drivers_start = extern_sym!(__start_device_drivers as DeviceDriver);
+    let drivers_end = extern_sym!(__stop_device_drivers as DeviceDriver);
     let len = (drivers_end.addr() - drivers_start.addr()) / size_of::<DeviceDriver>();
 
     unsafe { core::slice::from_raw_parts(drivers_start, len) }
