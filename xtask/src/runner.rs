@@ -11,6 +11,12 @@ pub enum BlockDriver {
     VirtioPci,
 }
 
+impl BlockDriver {
+    const fn is_virtio(self) -> bool {
+        matches!(self, Self::Virtio | Self::VirtioPci)
+    }
+}
+
 impl core::fmt::Debug for BlockDriver {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter.write_str(match self {
@@ -132,6 +138,10 @@ pub fn run(ctx: &BuildCtx, options: Options) -> anyhow::Result<()> {
         BlockDriver::VirtioPci => {
             qemu.args(["-device", "virtio-blk-pci,serial=deadbeef,drive=disk0"]);
         }
+    }
+
+    if options.block.is_virtio() {
+        qemu.args(["-global", "virtio-mmio.force-legacy=false"]);
     }
 
     qemu.args(["-drive", "id=disk0,format=raw,if=none,file=.hdd/disk0.img"]);
