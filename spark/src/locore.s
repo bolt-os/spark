@@ -53,6 +53,16 @@ _start:
         csrw            stvec, t0
 
         /*
+         * Initialize the FPU.
+         */
+        li              t0, ~(3 << 13)  // clear sstatus.FS
+        csrc            sstatus, t0
+        li              t0, 1 << 13     // sstatus.FS = initial
+        csrs            sstatus, t0
+        li              t0, 1 << 5      // fcsr.frm = rtz
+        csrw            fcsr, t0
+
+        /*
          * Clear the .bss segment.
          *
          * The linker script ensures __bss is properly aligned, and the size is at least
