@@ -35,8 +35,6 @@
     custom_test_frameworks,
     default_alloc_error_handler,
     prelude_import,
-    asm_sym,                            // https://github.com/rust-lang/rust/issues/93333
-    int_log,                            // https://github.com/rust-lang/rust/issues/70887
     let_chains,                         // https://github.com/rust-lang/rust/issues/53667
     naked_functions,                    // https://github.com/rust-lang/rust/issues/32408
     new_uninit,                         // https://github.com/rust-lang/rust/issues/63291
