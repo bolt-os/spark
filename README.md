@@ -11,3 +11,7 @@ To build spark just use ``cargo xtask build``
 To run it in a virtual machine make sure you have qemu installed
 Just use ``cargo xtask run``
 If you encounter an error with qemu try running ``cargo xtask run -- -cpu rv64``
+
+# Building
+
+To build spark just use ``cargo xtask build``
