@@ -33,8 +33,8 @@
 #![no_main]
 #![feature(
     custom_test_frameworks,
-    default_alloc_error_handler,
     prelude_import,
+    get_mut_unchecked,                  // https://github.com/rust-lang/rust/issues/63292
     let_chains,                         // https://github.com/rust-lang/rust/issues/53667
     naked_functions,                    // https://github.com/rust-lang/rust/issues/32408
     new_uninit,                         // https://github.com/rust-lang/rust/issues/63291
@@ -59,6 +59,7 @@
     clippy::enum_glob_use,
     clippy::inline_always,
     clippy::items_after_statements,
+    clippy::module_name_repetitions,
     clippy::must_use_candidate,
     clippy::unreadable_literal,
     clippy::wildcard_imports
