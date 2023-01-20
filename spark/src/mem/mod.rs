@@ -72,3 +72,10 @@ macro_rules! size_of {
         ::core::mem::size_of::<$t>()
     };
 }
+
+pub unsafe fn cast_slice<T>(buf: &[u8]) -> &T {
+    debug_assert!(buf.len() >= size_of!(T));
+    let ptr = buf.as_ptr().cast::<T>();
+    debug_assert!(ptr.is_aligned());
+    &*ptr
+}
