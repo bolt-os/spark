@@ -84,3 +84,32 @@ pub fn init() {
     log::set_logger(&LOGGER).unwrap();
     log::set_max_level(log::LevelFilter::Trace);
 }
+
+pub type Result<T> = core::result::Result<T, Error>;
+
+#[allow(clippy::enum_variant_names)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Error {
+    DeviceError,
+    InvalidArgument,
+    IsADirectory,
+    NameTooLong,
+    NotADirectory,
+    NotFound,
+    Other,
+    OutOfBounds,
+    TimedOut,
+    Unsupported,
+}
+
+impl core::fmt::Display for Error {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        core::fmt::Debug::fmt(self, f)
+    }
+}
+
+impl From<Error> for anyhow::Error {
+    fn from(value: Error) -> Self {
+        anyhow::anyhow!("{value}")
+    }
+}
