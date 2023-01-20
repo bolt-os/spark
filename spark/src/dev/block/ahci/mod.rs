@@ -1,4 +1,7 @@
-use crate::dev::{pcie::Device, DeviceDriver};
+use crate::{
+    dev::{pcie::Device, DeviceDriver},
+    io,
+};
 use anyhow::anyhow;
 
 pub mod hba;
@@ -39,7 +42,7 @@ impl Ahci<'_> {
                 && port.signature.read().get() == hba::Port::ATA_PORT_CLASS
             {
                 port.configure();
-                super::register_block_device(Box::new(AhciPort { port }));
+                super::register(Box::new(AhciPort { port })).ok();
             }
         });
 
@@ -53,10 +56,26 @@ struct AhciPort<'a> {
 
 // # Safety: We're single threaded.
 unsafe impl Send for AhciPort<'_> {}
+unsafe impl Sync for AhciPort<'_> {}
 
-impl super::BlockDevice for AhciPort<'_> {
-    fn read(&self, address: usize, buffer: &mut [u8]) {
-        assert_eq!(address & 0xFF, 0, "address must be sector-aligned");
-        self.port.read(address, buffer);
+impl core::fmt::Debug for AhciPort<'_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "AhciPort")
+    }
+}
+
+impl super::BlockIo for AhciPort<'_> {
+    fn block_size(&self) -> u64 {
+        todo!();
+    }
+
+    fn capacity(&self) -> u64 {
+        todo!();
+    }
+
+    fn read_blocks(&self, lba: u64, buffer: &mut [u8]) -> io::Result<()> {
+        assert_eq!(lba & 0xFF, 0, "address must be sector-aligned");
+        self.port.read(lba as usize, buffer);
+        Ok(())
     }
 }

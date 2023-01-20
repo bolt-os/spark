@@ -276,10 +276,3 @@ impl Port {
         }
     }
 }
-
-impl crate::dev::block::BlockDevice for Port {
-    fn read(&self, address: usize, buffer: &mut [u8]) {
-        // TODO don't just silently truncate the low address bits
-        self.read(address & !(Self::SECTOR_SIZE - 1), buffer);
-    }
-}

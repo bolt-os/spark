@@ -19,6 +19,7 @@ log = "0.4"
 fdt = "0.1"
 rustc-demangle = "0.1"
 spin = "0.9"
+uuid = { version = "1.0", default-features = false }
 
 [dependencies.unwinding]
 version = "0.1"
