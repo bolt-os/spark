@@ -35,6 +35,7 @@ use spin::{mutex::SpinMutex, RwLock};
 use uuid::Uuid;
 
 pub mod ahci;
+pub mod nvme;
 
 /// Devices which provide a block-oriented interface
 pub trait BlockIo: Send + Sync + Debug {
