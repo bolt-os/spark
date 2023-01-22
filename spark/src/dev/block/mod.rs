@@ -31,10 +31,11 @@
 use crate::{io, size_of};
 use alloc::sync::{Arc, Weak};
 use core::{cmp, fmt::Debug};
-use spin::RwLock;
+use spin::{mutex::SpinMutex, RwLock};
 use uuid::Uuid;
 
 pub mod ahci;
+pub mod nvme;
 
 /// Devices which provide a block-oriented interface
 pub trait BlockIo: Send + Sync + Debug {
@@ -56,9 +57,14 @@ pub trait BlockIo: Send + Sync + Debug {
     }
 
     fn read(&self, mut offset: u64, buf: &mut [u8]) -> io::Result<usize> {
+        static LOCAL_BUF: SpinMutex<Vec<u8>> = SpinMutex::new(vec![]);
+
         let block_size = self.block_size();
 
-        let mut local_buf = vec![0; block_size as usize];
+        let mut local_buf = LOCAL_BUF.lock();
+        let cur_len = local_buf.len();
+        local_buf.resize(cur_len.max(block_size as usize), 0);
+
         let mut buf_offset = 0;
         let mut count = buf.len() as u64;
 
