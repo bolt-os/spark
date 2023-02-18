@@ -34,6 +34,7 @@
 #![feature(
     custom_test_frameworks,
     prelude_import,
+    array_chunks,                       // https://github.com/rust-lang/rust/issues/74985
     get_mut_unchecked,                  // https://github.com/rust-lang/rust/issues/63292
     let_chains,                         // https://github.com/rust-lang/rust/issues/53667
     naked_functions,                    // https://github.com/rust-lang/rust/issues/32408
@@ -100,11 +101,7 @@ mod trap;
 pub use anyhow::Result;
 pub use mem::{pmm, vmm};
 
-use core::{
-    ptr,
-    sync::atomic::{AtomicPtr, Ordering},
-};
-use spark::Bootinfo;
+use core::{ptr, sync::atomic::AtomicPtr};
 
 global_asm!(include_str!("locore.s"), options(raw));
 
@@ -142,119 +139,7 @@ pub extern "C" fn spark_main(hartid: usize, dtb_ptr: *mut u8) -> ! {
     // TODO: Parse bootloader config and find boot entry
     //  Eventually, this is where we'd start an interactive console.
 
-    DTB_PTR.store(dtb_ptr, Ordering::Relaxed);
-
-    let mut vmspace = vmm::init_from_fdt(fdt, hartid);
-    let fw_cfg = {
-        let fdt_node = fdt.find_compatible(&["qemu,fw-cfg-mmio"]).unwrap();
-        let mmio_window = fdt_node.reg().unwrap().next().unwrap();
-        dev::fw_cfg::FwCfg::new(mmio_window.starting_address as _).unwrap()
-    };
-
-    if let Some(spark_file) = fw_cfg.lookup("opt/org.spark/self") {
-        let file_data = fw_cfg.read_file(spark_file).unwrap();
-        unsafe { panic::register_executable(file_data) };
-    }
-
-    let kernel_file = fw_cfg
-        .lookup("opt/org.spark/kernel")
-        .expect("no kernel found");
-    let mut kernel_data = fw_cfg.read_file(kernel_file).unwrap();
-    let kernel_elf = elf::Elf::new(&kernel_data).unwrap();
-
-    log::info!("loading kernel: `opt/org.spark/kernel`");
-    let rtld_object = rtld::load_object(&kernel_elf, &mut vmspace).unwrap();
-
-    log::info!("physical base: {:#018x}", rtld_object.image_base);
-    log::info!("virtual base:  {:#018x}", rtld_object.load_base);
-    log::info!("reloc slide:   {:#018x}", rtld_object.reloc_base);
-    log::info!("entry point:   {:#018x}", kernel_elf.entry_point());
-
-    proto::handle_requests(hartid, &rtld_object, &vmspace, fdt);
-
-    let tp = rtld_object.allocate_tls(hartid, &mut vmspace);
-
-    let stack_ptr = unsafe {
-        extern "C" {
-            static __boot_stackp: u8;
-        }
-
-        ptr::addr_of!(__boot_stackp).addr()
-    };
-
-    let bootinfo = pmm::alloc_frames(pages_for!(type spark::Bootinfo)).unwrap();
-    let bootinfo =
-        unsafe { &mut *((vmspace.higher_half_start() + bootinfo) as *mut spark::Bootinfo) };
-
-    bootinfo.hart_id = hartid;
-    bootinfo.free_list = unsafe { pmm::handoff() };
-
-    let entry_point = rtld_object.entry_point();
-
-    bootinfo.kern_file_len = kernel_data.len();
-    bootinfo.kern_file_ptr = kernel_data
-        .as_mut_ptr()
-        .with_addr(vmspace.higher_half_start() + kernel_data.as_mut_ptr().addr());
-
-    unsafe {
-        spinup(entry_point, stack_ptr, 0, bootinfo as _, tp);
-    }
-}
-
-/// Pass off control to the kernel
-///
-/// All registers should be cleared to zero (we need to keep one to hold the jump address),
-/// disable interrupts and clear the `stvec` CSR.
-#[naked]
-unsafe extern "C" fn spinup(
-    entry_point: usize,
-    stack_ptr: usize,
-    global_ptr: usize,
-    bootinfo: *mut Bootinfo,
-    tp: usize,
-) -> ! {
-    asm!(
-        r#"
-            mv      t0, a0
-            mv      sp, a1
-            mv      gp, a2
-            mv      a0, a3
-            mv      tp, a4
-            mv      a1, zero
-            mv      a2, zero
-            mv      a3, zero
-            mv      a4, zero
-            mv      a5, zero
-            mv      a6, zero
-            mv      a7, zero
-            mv      s0, zero
-            mv      s1, zero
-            mv      s2, zero
-            mv      s3, zero
-            mv      s4, zero
-            mv      s5, zero
-            mv      s6, zero
-            mv      s7, zero
-            mv      s8, zero
-            mv      s9, zero
-            mv      s10, zero
-            mv      s11, zero
-            mv      t1, zero
-            mv      t2, zero
-            mv      t3, zero
-            mv      t4, zero
-            mv      t5, zero
-            mv      t6, zero
-            // mv      tp, zero
-            mv      ra, zero
-            csrci   sstatus, 0x2
-            csrw    sie, zero
-            csrw    stvec, zero
-            csrw    sscratch, zero
-            jr      t0
-        "#,
-        options(noreturn)
-    )
+    todo!("lol");
 }
 
 #[allow(dead_code)]
