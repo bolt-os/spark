@@ -64,6 +64,9 @@ pub struct Options {
     #[clap(arg_enum, long, default_value = "virtio")]
     block: BlockDriver,
 
+    #[clap(long, default_value = "qemu-system-riscv64")]
+    qemu: PathBuf,
+
     #[clap(last = true)]
     emu_args: Vec<OsString>,
 }
@@ -100,7 +103,7 @@ pub fn run(ctx: &BuildCtx, options: Options) -> anyhow::Result<()> {
     ));
     let spark_bin = spark_elf.with_extension("bin");
 
-    let mut qemu = Command::new("qemu-system-riscv64");
+    let mut qemu = Command::new(&options.qemu);
 
     #[rustfmt::skip]
     qemu.args([

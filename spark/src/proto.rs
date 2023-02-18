@@ -163,7 +163,7 @@ fn report_error(err: RequestError) {
 fn get_requests_from_section<'a>(object: &rtld::Rtld) -> Option<Vec<Request<'a>>> {
     let mut requests = vec![];
 
-    for &ptr in object.find_section(".limine_reqs")?.table::<*mut u8>() {
+    for &ptr in unsafe { object.find_section(".limine_reqs")?.table::<*mut u8>() } {
         let ptr = ptr.with_addr(object.image_base + (ptr.addr() - object.load_base));
         match Request::new_from_ptr(ptr, object) {
             Ok(req) => requests.push(req),
