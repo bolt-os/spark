@@ -133,8 +133,8 @@ pub struct Volume {
     offset: u64,
     capacity: u64,
     uuid: Option<Uuid>,
-    partition_type: PartitionType,
-    partition_guid: Option<Uuid>,
+    pub partition_type: PartitionType,
+    pub partition_guid: Option<Uuid>,
 }
 
 unsafe impl Sync for Volume {}

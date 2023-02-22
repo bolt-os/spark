@@ -40,6 +40,7 @@ use crate::{
 };
 use alloc::sync::Arc;
 use anyhow::anyhow;
+use core::cmp;
 use libsa::endian::u32_le;
 use spin::Mutex;
 
@@ -49,7 +50,7 @@ mod queue;
 
 use self::{
     controller::{Controller, DataPtr, IoCommand},
-    identify::{NvmCommandSet, NvmIdentifyNamespace},
+    identify::{IdentifyController, NvmCommandSet, NvmIdentifyNamespace},
 };
 
 #[used]
@@ -94,6 +95,10 @@ fn pci_init(dev: &pcie::Device) -> crate::Result<()> {
 ///
 /// This function is called after transport-specific initialization is complete.
 fn init_common(mut ctlr: Controller) -> crate::Result<()> {
+    let ctlr_info = ctlr.identify::<IdentifyController>(None)?;
+
+    let max_tx_blocks = ((1 << ctlr_info.mdts) * ctlr.capabilities().min_page_size()) as u64;
+
     let active_namespaces =
         ctlr.identify::<identify::IoCommandSetActiveNamespaceIdList<NvmCommandSet>>(None)?;
 
@@ -123,6 +128,7 @@ fn init_common(mut ctlr: Controller) -> crate::Result<()> {
             controller: Arc::clone(&ctlr_arc),
             block_size: lba_format.lba_data_size(),
             capacity: ns_info.nsze.get(),
+            max_tx_blocks,
         });
         if let Err(error) = block::register(device) {
             log::error!("failed to register namespace #{nsid}: {error}");
@@ -140,6 +146,7 @@ struct Namespace {
     nsid: u32,
     block_size: usize,
     capacity: u64,
+    max_tx_blocks: u64,
 }
 
 struct PrpList {
@@ -186,59 +193,69 @@ impl BlockIo for Namespace {
         self.capacity
     }
 
-    fn read_blocks(&self, addr: u64, buf: &mut [u8]) -> crate::io::Result<()> {
+    fn read_blocks(&self, mut addr: u64, buf: &mut [u8]) -> crate::io::Result<()> {
         // Length of buffer must be a multiple of the block size.
         if buf.len() & (self.block_size - 1) != 0 {
             return Err(io::Error::InvalidArgument);
         }
 
-        let blocks = buf.len() / self.block_size;
-        assert!(u16::try_from(blocks).is_ok());
-        assert!(blocks >= 1);
-        let mut prp = [0u64; 2];
-        prp[0] = buf.as_mut_ptr().addr() as u64;
+        let mut blocks = buf.len() / self.block_size;
+        let mut buf_offset = 0;
+        while blocks > 0 {
+            let buf_ptr = buf[buf_offset..].as_mut_ptr();
+            let r_blocks = cmp::min(cmp::min(blocks, self.max_tx_blocks as usize), 0x10000);
+            let r_len = r_blocks * self.block_size;
 
-        let align_space = match buf.as_ptr().align_offset(PAGE_SIZE) {
-            0 => PAGE_SIZE,
-            x => x,
-        };
+            let mut prp = [0u64; 2];
+            prp[0] = buf_ptr.addr() as u64;
+            let align_space = match buf_ptr.align_offset(PAGE_SIZE) {
+                0 => PAGE_SIZE,
+                x => x,
+            };
+            let _list = if align_space < r_len {
+                // The transfer crosses at least 1 page boundary
+                let start = buf_ptr.addr() + align_space;
 
-        let _list = if align_space < buf.len() {
-            // The transfer crosses at least 1 page boundary
-            let start = buf.as_mut_ptr().addr() + align_space;
-            let remaning_len = buf.len() - align_space;
-            if remaning_len > PAGE_SIZE {
-                // The tranfer crosses >= 2 pages, a PRP List is needed.
-                let num_prps = remaning_len / PAGE_SIZE;
-                let mut prp_list = PrpList::new();
-                for i in 0..num_prps {
-                    prp_list.push_addr((start + i * PAGE_SIZE) as u64);
+                let remaning_len = r_len - align_space;
+                if remaning_len > PAGE_SIZE {
+                    // The tranfer crosses >= 2 pages, a PRP List is needed.
+                    let num_prps = remaning_len / PAGE_SIZE;
+                    let mut prp_list = PrpList::new();
+                    for i in 0..num_prps {
+                        prp_list.push_addr((start + i * PAGE_SIZE) as u64);
+                    }
+                    prp[1] = prp_list.addr() as u64;
+                    Some(prp_list)
+                } else {
+                    if align_space > 0 {
+                        prp[1] = start as u64;
+                    }
+                    None
                 }
-                prp[1] = prp_list.addr() as u64;
-                Some(prp_list)
             } else {
-                if align_space > 0 {
-                    prp[1] = start as u64;
-                }
                 None
-            }
-        } else {
-            None
-        };
+            };
 
-        let mut ctlr = self.controller.lock();
-        ctlr.io_command(IoCommand::Read)
-            .namespace_id(self.nsid)
-            // .data_ptr(DataPtr::Prp(buf.as_mut_ptr().addr() as u64, 0))
-            .data_ptr(DataPtr::Prp(prp[0], prp[1]))
-            .cdw10(addr as u32)
-            .cdw11((addr >> 32) as u32)
-            .cdw12(blocks as u32 - 1)
-            .execute()
-            .map(|_| ())
-            .map_err(|err| {
-                log::error!("error: {err:?}");
-                io::Error::DeviceError
-            })
+            let mut ctlr = self.controller.lock();
+            ctlr.io_command(IoCommand::Read)
+                .namespace_id(self.nsid)
+                // .data_ptr(DataPtr::Prp(buf.as_mut_ptr().addr() as u64, 0))
+                .data_ptr(DataPtr::Prp(prp[0], prp[1]))
+                .cdw10(addr as u32)
+                .cdw11((addr >> 32) as u32)
+                .cdw12(r_blocks as u32 - 1)
+                .execute()
+                .map(|_| ())
+                .map_err(|err| {
+                    log::error!("error: {err:?}");
+                    io::Error::DeviceError
+                })?;
+
+            blocks -= r_blocks;
+            addr += r_blocks as u64;
+            buf_offset += r_len;
+        }
+
+        Ok(())
     }
 }

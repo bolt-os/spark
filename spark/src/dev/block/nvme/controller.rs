@@ -46,7 +46,7 @@ use libsa::{
 bitflags::bitflags! {
     /// Controller Capabilities
     #[repr(transparent)]
-    struct Capabilities : u64 {
+    pub(super) struct Capabilities : u64 {
         /// NVM Command Set is supported
         ///
         /// This command set should be implemented by all (I/O) controllers and provides
@@ -78,7 +78,7 @@ impl Capabilities {
     }
 
     /// Returns the minimum host page size supported by the controller
-    fn min_page_size(self) -> usize {
+    pub(super) fn min_page_size(self) -> usize {
         let mpsmin = (self.bits >> 48) & 0xf;
         0x1000 << mpsmin
     }
@@ -190,6 +190,10 @@ impl Controller {
                 return Err(io::Error::TimedOut);
             }
         }
+    }
+
+    pub(super) fn capabilities(&self) -> Capabilities {
+        self.caps
     }
 
     pub fn initialize(base: *mut u32_le) -> Option<Controller> {
