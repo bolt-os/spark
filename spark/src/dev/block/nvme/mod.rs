@@ -97,7 +97,7 @@ fn pci_init(dev: &pcie::Device) -> crate::Result<()> {
 fn init_common(mut ctlr: Controller) -> crate::Result<()> {
     let ctlr_info = ctlr.identify::<IdentifyController>(None)?;
 
-    let max_tx_blocks = ((1 << ctlr_info.mdts) * ctlr.capabilities().min_page_size()) as u64;
+    let max_tx_size = ((1 << ctlr_info.mdts) * ctlr.capabilities().min_page_size()) as u64;
 
     let active_namespaces =
         ctlr.identify::<identify::IoCommandSetActiveNamespaceIdList<NvmCommandSet>>(None)?;
@@ -121,14 +121,15 @@ fn init_common(mut ctlr: Controller) -> crate::Result<()> {
             );
             continue;
         }
+        let block_size = lba_format.lba_data_size();
 
         drop(ctlr);
         let device = Box::new(Namespace {
             nsid: nsid.get(),
             controller: Arc::clone(&ctlr_arc),
-            block_size: lba_format.lba_data_size(),
+            block_size,
             capacity: ns_info.nsze.get(),
-            max_tx_blocks,
+            max_tx_blocks: max_tx_size / block_size as u64,
         });
         if let Err(error) = block::register(device) {
             log::error!("failed to register namespace #{nsid}: {error}");

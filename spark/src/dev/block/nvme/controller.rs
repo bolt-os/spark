@@ -445,6 +445,13 @@ impl<'ctlr> CommandBuilder<'ctlr> {
         self.ctlr.completion_doorbell(self.queue, new_head);
 
         if status.code() != 0 {
+            log::debug!(
+                "status.type = {}, status.code = {}\n{:#x?}",
+                status.code_type(),
+                status.code(),
+                self.cmd,
+            );
+
             return Err(status);
         }
 

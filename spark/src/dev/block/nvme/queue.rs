@@ -67,6 +67,10 @@ bitflags::bitflags! {
 }
 
 impl CompletionStatus {
+    pub fn code_type(self) -> u8 {
+        (self.bits >> 9 & 7) as u8
+    }
+
     pub fn code(self) -> u8 {
         (self.bits >> 1) as u8
     }
