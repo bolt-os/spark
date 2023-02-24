@@ -87,6 +87,7 @@ mod prelude {
     };
 }
 
+mod fs;
 mod dev;
 mod io;
 mod malloc;
