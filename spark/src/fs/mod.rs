@@ -32,6 +32,8 @@ use crate::{dev::block::Volume, io, size_of};
 use alloc::sync::Arc;
 use libsa::extern_sym;
 
+mod fat;
+
 /// A filesystem driver compiled into the bootloader
 #[repr(C)]
 pub struct FilesystemDriver {

@@ -87,8 +87,8 @@ mod prelude {
     };
 }
 
-mod fs;
 mod dev;
+mod fs;
 mod io;
 mod malloc;
 mod mem;
@@ -115,6 +115,8 @@ pub fn hcf() -> ! {
 
 static DTB_PTR: AtomicPtr<u8> = AtomicPtr::new(ptr::null_mut());
 
+static SPARK_CFG_PATHS: &[&str] = &["/boot/spark.cfg", "/spark.cfg"];
+
 #[allow(clippy::not_unsafe_ptr_arg_deref, clippy::missing_panics_doc)]
 #[no_mangle]
 pub extern "C" fn spark_main(hartid: usize, dtb_ptr: *mut u8) -> ! {
@@ -135,7 +137,42 @@ pub extern "C" fn spark_main(hartid: usize, dtb_ptr: *mut u8) -> ! {
     // Probe the full device tree before we search for a boot partition
     dev::init(fdt);
 
-    // TODO: Find boot partition, look for config
+    // Search each volume on each disk for the config file.
+    let mut config_file = 'b: {
+        for disk in dev::block::DISKS.read().iter() {
+            for volume in disk.volumes() {
+                let mut root = match fs::mount(volume) {
+                    Ok(file) => file,
+                    Err(io::Error::Unsupported) => {
+                        // no driver for this filesystem
+                        continue;
+                    }
+                    Err(err) => {
+                        log::warn!("error mounting volume: {err:?}");
+                        continue;
+                    }
+                };
+
+                for path in SPARK_CFG_PATHS {
+                    match root.open(path) {
+                        Ok(file) => {
+                            break 'b file;
+                        }
+                        Err(io::Error::NotFound) => {}
+                        Err(err) => {
+                            log::warn!("error opening path {path:?}: {err:?}");
+                            continue;
+                        }
+                    }
+                }
+            }
+        }
+
+        panic!("cannot find `spark.cfg` on any device");
+    };
+
+    let boot_config_data = config_file.read_to_end().unwrap();
+    println!("{}", core::str::from_utf8(&boot_config_data).unwrap());
 
     // TODO: Parse bootloader config and find boot entry
     //  Eventually, this is where we'd start an interactive console.
