@@ -38,6 +38,7 @@
     get_mut_unchecked,                  // https://github.com/rust-lang/rust/issues/63292
     let_chains,                         // https://github.com/rust-lang/rust/issues/53667
     naked_functions,                    // https://github.com/rust-lang/rust/issues/32408
+    never_type,                         // https://github.com/rust-lang/rust/issues/35121
     new_uninit,                         // https://github.com/rust-lang/rust/issues/63291
     once_cell,                          // https://github.com/rust-lang/rust/issues/74465
     pointer_byte_offsets,               // https://github.com/rust-lang/rust/issues/96283
@@ -87,6 +88,7 @@ mod prelude {
     };
 }
 
+mod config;
 mod dev;
 mod fs;
 mod io;
@@ -102,7 +104,8 @@ mod trap;
 pub use anyhow::Result;
 pub use mem::{pmm, vmm};
 
-use core::{ptr, sync::atomic::AtomicPtr};
+use crate::config::Value;
+use core::sync::atomic::{AtomicUsize, Ordering};
 
 global_asm!(include_str!("locore.s"), options(raw));
 
@@ -113,7 +116,7 @@ pub fn hcf() -> ! {
     }
 }
 
-static DTB_PTR: AtomicPtr<u8> = AtomicPtr::new(ptr::null_mut());
+static BOOT_HART_ID: AtomicUsize = AtomicUsize::new(0);
 
 static SPARK_CFG_PATHS: &[&str] = &["/boot/spark.cfg", "/spark.cfg"];
 
@@ -124,8 +127,10 @@ pub extern "C" fn spark_main(hartid: usize, dtb_ptr: *mut u8) -> ! {
     //  TODO: Use legacy SBI console until we probe for consoles.
     io::init();
 
+    BOOT_HART_ID.store(hartid, Ordering::Relaxed);
+
     // Install the Device Tree
-    let fdt = dev::fdt::init(hartid, dtb_ptr);
+    let fdt = dev::fdt::init(dtb_ptr);
 
     // TODO: the platform stuff in `fdt::init()` should be pulled out
 
@@ -172,12 +177,22 @@ pub extern "C" fn spark_main(hartid: usize, dtb_ptr: *mut u8) -> ! {
     };
 
     let boot_config_data = config_file.read_to_end().unwrap();
-    println!("{}", core::str::from_utf8(&boot_config_data).unwrap());
+    let boot_config = config::parse_config_file(&boot_config_data);
+
+    let boot_entry = boot_config.entries.first().expect("no boot entry");
+    match boot_entry.param("protocol") {
+        Some(Value::String(proto)) => {
+            if *proto != "limine" {
+                todo!("limine or bust!!");
+            }
+        }
+        _ => panic!("`protocol` parameter is not a string"),
+    }
 
     // TODO: Parse bootloader config and find boot entry
     //  Eventually, this is where we'd start an interactive console.
 
-    todo!("lol");
+    proto::limine::main(config_file, boot_entry).unwrap();
 }
 
 #[allow(dead_code)]

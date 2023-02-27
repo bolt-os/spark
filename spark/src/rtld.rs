@@ -32,8 +32,8 @@ use crate::{
     page_align_down, page_align_up, pages_for, pmm, size_of,
     vmm::{AddressSpace, MapError},
 };
-use core::{cell::OnceCell, cmp, mem::size_of};
-use elf::{DynTag, Elf, Rela, RelocKind, SegmentKind};
+use core::cmp;
+use elf::{DynTag, Elf, Rela, RelocKind, Segment, SegmentKind};
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum LoadError {
@@ -43,245 +43,214 @@ pub enum LoadError {
     TruncatedSegment,
 }
 
-pub struct Rtld<'elf> {
-    object: &'elf elf::Elf<'elf>,
-    pub link_base: usize,
-    /// Physical address at which the object's image was loaded
+pub struct Rtld<'a, 'elf> {
+    pub elf: &'a Elf<'elf>,
+    load_segments: Vec<Segment<'elf, 'elf>>,
+    link_base: usize,
+    // link_end: usize,
+    image_size: usize,
     pub image_base: usize,
-    /// Total size of the image, in bytes
-    pub image_size: usize,
-    /// Virtual address at which the object's image was loaded
-    pub load_base: usize,
-    /// Relocation slide applied to the object (general relocation/KASLR)
-    ///
-    /// This value is the difference between the address at which the object was linked
-    /// and the actual address at which is was loaded (`load_base`).
-    pub reloc_base: usize,
-    relocation_table: OnceCell<Option<&'elf [Rela]>>,
-    has_ifuncs: bool,
+    flags: RtldFlags,
+    reloc_offset: usize,
 }
 
-impl<'elf> core::ops::Deref for Rtld<'elf> {
-    type Target = elf::Elf<'elf>;
-
-    fn deref(&self) -> &Self::Target {
-        self.object
+bitflags::bitflags! {
+    struct RtldFlags : u32 {
+        const IMAGE_LOADED = 1 << 0;
     }
 }
 
-impl<'elf> Rtld<'elf> {
-    pub fn image_as_slice(&self) -> &[u8] {
-        unsafe { core::slice::from_raw_parts(self.image_base as *const u8, self.image_size) }
+impl<'elf, 'a: 'elf> Rtld<'a, 'elf> {
+    pub fn new(elf: &'a Elf<'elf>) -> Result<Rtld<'a, 'elf>, LoadError> {
+        let mut load_segments = vec![];
+        let mut link_base = usize::MAX;
+        let mut link_end = usize::MIN;
+        // let mut dynamic = None;
+        // let mut tls = None;
+
+        for segment in elf.segments() {
+            match segment.kind() {
+                SegmentKind::Load => {
+                    let base = segment.virtual_address() as usize;
+                    let end = base + segment.mem_size();
+
+                    if segment.mem_size() < segment.file_size() {
+                        return Err(LoadError::TruncatedSegment);
+                    }
+
+                    link_base = cmp::min(link_base, base);
+                    link_end = cmp::max(link_end, end);
+                    load_segments.push(segment);
+                }
+                // SegmentKind::Dynamic => {
+                //     assert!(dynamic.is_none());
+                //     dynamic = Some(segment);
+                // }
+                // SegmentKind::Tls => {
+                //     assert!(tls.is_none());
+                //     tls = Some(segment);
+                // }
+                _ => continue,
+            }
+        }
+
+        if load_segments.is_empty() {
+            return Err(LoadError::NoSegments);
+        }
+
+        let image_size = link_end - link_base;
+
+        Ok(Self {
+            elf,
+            load_segments,
+            link_base,
+            image_size,
+            image_base: 0,
+            reloc_offset: 0,
+            flags: RtldFlags::empty(),
+        })
     }
 
-    fn reloc_addr(&self, addr: usize) -> usize {
-        self.reloc_base.wrapping_add(addr)
+    pub fn set_relocation_offset(&mut self, offset: usize) {
+        assert!(
+            !self.flags.contains(RtldFlags::IMAGE_LOADED),
+            "the relocation offset cannot be changed once the image has been loaded"
+        );
+        self.reloc_offset = offset;
     }
 
-    fn reloc_addr_signed(&self, addr: isize) -> usize {
-        self.reloc_base.wrapping_add_signed(addr)
-    }
-
-    pub fn check_image_ptr<T>(&self, ptr: *const T) -> bool {
+    pub fn check_ptr<T>(&self, ptr: *const T) -> bool {
         let obj_start = ptr.addr();
-        let obj_end = obj_start + size_of::<T>();
+        let obj_end = obj_start + size_of!(T);
         let img_start = self.image_base;
         let img_end = img_start + self.image_size;
 
         img_start <= obj_start && obj_end <= img_end
     }
 
-    pub fn entry_point(&self) -> usize {
-        self.reloc_addr(self.object.entry_point() as _)
+    pub fn reloc(&self, addr: usize) -> usize {
+        self.reloc_offset.wrapping_add(addr)
+    }
+
+    pub fn reloc_signed(&self, addr: isize) -> usize {
+        self.reloc_offset.wrapping_add_signed(addr)
+    }
+
+    pub fn map_image(&mut self, vmspace: &mut AddressSpace) -> Result<(), LoadError> {
+        assert!(self.flags.contains(RtldFlags::IMAGE_LOADED));
+        self.flags |= RtldFlags::IMAGE_LOADED;
+
+        for segment in &self.load_segments {
+            let virt = segment.virtual_address() as usize;
+            let phys = self.image_base + (virt - self.link_base);
+            let virt_p = page_align_down!(virt);
+            let phys_p = page_align_down!(phys);
+
+            if virt < vmspace.higher_half_start() {
+                return Err(LoadError::LowerHalfSegment);
+            }
+
+            vmspace
+                .map_pages(
+                    virt_p,
+                    phys_p,
+                    page_align_up!(virt + segment.mem_size()) - virt_p,
+                    segment.flags().into(),
+                )
+                .map_err(|err| match err {
+                    MapError::OverlappingMappings => LoadError::OverlappingSegments,
+                    MapError::InvalidFlags => panic!("this shouldn't happen"),
+                    MapError::MisalignedAddr => unreachable!(), /* they damn well better be aligned */
+                })
+                .unwrap();
+        }
+
+        Ok(())
+    }
+
+    pub fn load_base(&self) -> usize {
+        assert!(self.flags.contains(RtldFlags::IMAGE_LOADED));
+        self.reloc(self.link_base)
+    }
+
+    pub fn load_image(&mut self) {
+        assert!(!self.flags.contains(RtldFlags::IMAGE_LOADED));
+        self.flags |= RtldFlags::IMAGE_LOADED;
+
+        self.image_base = pmm::alloc_frames(pages_for!(self.image_size)).unwrap();
+
+        for segment in &self.load_segments {
+            let virt = segment.virtual_address() as usize;
+            let phys = self.image_base + (virt - self.link_base);
+
+            unsafe {
+                core::ptr::copy_nonoverlapping(
+                    segment.file_data().as_ptr(),
+                    phys as *mut u8,
+                    segment.file_size(),
+                );
+                core::ptr::write_bytes(
+                    (phys + segment.file_size()) as *mut u8,
+                    0,
+                    segment.mem_size() - segment.file_size(),
+                );
+            }
+        }
+    }
+
+    /// Convert a virtual address within the object to a physical address
+    ///
+    /// This is required for the Limine protocol to access the requests before we know
+    /// the paging mode that will be used.
+    pub fn to_image_ptr(&self, addr: usize) -> usize {
+        assert!(self.flags.contains(RtldFlags::IMAGE_LOADED));
+        let x = self.image_base + (addr - self.link_base);
+        log::trace!("{addr:#018x} -> {x:#018x}");
+        x
     }
 
     pub fn relocation_table(&self) -> Option<&'elf [Rela]> {
-        *self.relocation_table.get_or_init(|| {
-            self.object.dynamic_table().and_then(|dyntab| {
-                let mut addr = None;
-                let mut size = None;
-                let mut count = None;
+        self.elf.dynamic_table().and_then(|dyntab| {
+            let mut addr = None;
+            let mut size = None;
+            let mut count = None;
 
-                for entry in dyntab.table_raw() {
-                    match entry.tag() {
-                        DynTag::Rela => addr = Some(entry.value()),
-                        DynTag::RelaSize => size = Some(entry.value()),
-                        DynTag::RelaCount => count = Some(entry.value()),
-                        DynTag::RelaEnt => assert_eq!(entry.value(), size_of!(Rela)),
-                        _ => {}
-                    }
+            for entry in dyntab.table_raw() {
+                match entry.tag() {
+                    DynTag::Rela => addr = Some(entry.value()),
+                    DynTag::RelaSize => size = Some(entry.value()),
+                    DynTag::RelaCount => count = Some(entry.value()),
+                    DynTag::RelaEnt => assert_eq!(entry.value(), size_of!(Rela)),
+                    _ => {}
                 }
+            }
 
-                let addr = self.image_base + (addr? - self.link_base);
-                let len = size? / size_of!(Rela);
-                if let Some(count) = count {
-                    assert_eq!(len, count);
-                }
+            let addr = self.image_base + (addr? - self.link_base);
+            let len = size? / size_of!(Rela);
+            if let Some(count) = count {
+                assert_eq!(len, count);
+            }
 
-                unsafe { Some(core::slice::from_raw_parts(addr as *const _, len)) }
-            })
+            unsafe { Some(core::slice::from_raw_parts(addr as *const _, len)) }
         })
     }
 
-    pub fn is_relocatable(&self) -> bool {
-        self.object.file_type() == elf::ElfType::Dyn
-    }
+    pub fn do_relocations(&self) {
+        let Some(relocation_table) = self.relocation_table() else { return };
 
-    pub fn allocate_tls(&self, _hartid: usize, vmspace: &mut AddressSpace) -> usize {
-        let Some(sgmt) = self.segments().find(|sgmt| sgmt.kind() == SegmentKind::Tls) else { return 0 };
+        for reloc_entry in relocation_table {
+            let location = self.reloc(reloc_entry.offset as usize);
 
-        let tls_image = unsafe {
-            let ptr = (vmspace.higher_half_start() as *mut u8)
-                .add(pmm::alloc_frames(pages_for!(sgmt.mem_size())).unwrap());
-            core::slice::from_raw_parts_mut(ptr, sgmt.mem_size())
-        };
-
-        tls_image[..sgmt.file_size()].copy_from_slice(sgmt.file_data());
-        tls_image[sgmt.file_size()..].fill(0);
-
-        tls_image.as_ptr().addr()
-    }
-}
-
-/// Load an ELF executable into a virtual address space
-///
-/// This function loads the ELF executable `elf` into the virtual address space specified
-/// by `vmspace`. If present, all relocations will be resolved and the Thread Local Storage
-/// image will be initialized.
-pub fn load_object<'elf>(
-    elf: &'elf Elf,
-    vmspace: &mut AddressSpace,
-) -> Result<Rtld<'elf>, LoadError> {
-    let mut load_headers = vec![];
-    let mut link_base = usize::MAX;
-    let mut link_end = usize::MIN;
-
-    for sgmt in elf
-        .segments()
-        .filter(|sgmt| sgmt.kind() == SegmentKind::Load)
-    {
-        let sgmt_start = sgmt.virtual_address() as usize;
-        let sgmt_end = sgmt.virtual_address() as usize + sgmt.mem_size();
-
-        if sgmt_start < vmspace.higher_half_start() {
-            return Err(LoadError::LowerHalfSegment);
-        }
-
-        if sgmt.file_size() > sgmt.mem_size() {
-            return Err(LoadError::TruncatedSegment);
-        }
-
-        link_base = cmp::min(link_base, sgmt_start);
-        link_end = cmp::max(link_end, sgmt_end);
-
-        load_headers.push(sgmt);
-    }
-
-    if load_headers.is_empty() {
-        return Err(LoadError::NoSegments);
-    }
-
-    // Now that we know where the object linked to and how big it is, we can allocate
-    // memory for the image and decide whether or not to relocate it.
-
-    let image_size = link_end - link_base;
-    let image_base = pmm::alloc_frames(pages_for!(image_size)).unwrap();
-
-    // `load_base` is where the object actually gets loaded,
-    // KASLR would make this different from `link_base`.
-    let load_base = link_base;
-
-    // `reloc_base` is the difference between them, used for relocations.
-    let reloc_base = load_base.wrapping_sub(link_base);
-
-    // Copy each Load segment's data into the allocated image.
-    for sgmt in load_headers {
-        let virt_addr = reloc_base.wrapping_add(sgmt.virtual_address() as usize);
-        let phys_addr = image_base + (virt_addr - load_base);
-        let virt_page = page_align_down!(virt_addr);
-        let phys_page = page_align_down!(phys_addr);
-
-        unsafe {
-            let sgmt_data = core::slice::from_raw_parts_mut(phys_addr as *mut u8, sgmt.mem_size());
-
-            sgmt_data[..sgmt.file_size()].copy_from_slice(sgmt.file_data());
-            sgmt_data[sgmt.file_size()..].fill(0);
-        }
-
-        vmspace
-            .map_pages(
-                virt_page,
-                phys_page,
-                page_align_up!(virt_addr + sgmt.mem_size()) - virt_page,
-                sgmt.flags().into(),
-            )
-            .map_err(|err| match err {
-                MapError::OverlappingMappings => LoadError::OverlappingSegments,
-                MapError::InvalidFlags => panic!("this shouldn't happen"),
-                MapError::MisalignedAddr => unreachable!(), /* they damn well better be aligned */
-            })?;
-    }
-
-    let mut rtld_object = Rtld {
-        object: elf,
-        load_base,
-        reloc_base,
-        link_base,
-        image_base,
-        image_size,
-        relocation_table: OnceCell::new(),
-        has_ifuncs: false,
-    };
-
-    if rtld_object.is_relocatable() {
-        resolve_relocations(&mut rtld_object);
-    }
-
-    if rtld_object.has_ifuncs {
-        resolve_ifuncs(&mut rtld_object);
-    }
-
-    Ok(rtld_object)
-}
-
-fn resolve_relocations(object: &mut Rtld) {
-    let Some(relocation_table) = object.relocation_table() else { return };
-
-    for reloc_entry in relocation_table {
-        let location = object.reloc_addr(reloc_entry.offset as usize);
-
-        match reloc_entry.kind() {
-            RelocKind::RISCV_NONE => {}
-            RelocKind::RISCV_RELATIVE => {
-                let value = object.reloc_addr_signed(reloc_entry.addend as isize);
-                unsafe { *(location as *mut usize) = value };
+            match reloc_entry.kind() {
+                RelocKind::RISCV_NONE => {}
+                RelocKind::RISCV_RELATIVE => {
+                    let value = self.reloc_signed(reloc_entry.addend as isize);
+                    unsafe { *(location as *mut usize) = value };
+                }
+                // RelocKind::RISCV_IRELATIVE => object.has_ifuncs = true,
+                _ => panic!(),
             }
-            RelocKind::RISCV_IRELATIVE => object.has_ifuncs = true,
-            _ => panic!(),
         }
-    }
-}
-
-type IfuncResolver = unsafe extern "C" fn() -> usize;
-
-/// Resolve indirect function relocations
-///
-/// Relocating indirect functions is similar to normal relative relocations, except the
-/// computed address instead points to a function in the loaded binary which will return
-/// the actual address for the relocation.
-///
-/// Because the relocation is resolved by the object itself, all other relocations must
-/// be resolved before these are.
-fn resolve_ifuncs(object: &mut Rtld) {
-    let Some(relocation_table) = object.relocation_table() else { return };
-
-    for reloc_entry in relocation_table
-        .iter()
-        .filter(|r| r.kind() == RelocKind::RISCV_IRELATIVE)
-    {
-        let location = object.reloc_addr(reloc_entry.offset as usize) as *mut usize;
-        let resolv = object.reloc_addr_signed(reloc_entry.addend as isize) as *const IfuncResolver;
-        unsafe { *location = (*resolv)() };
     }
 }
 
