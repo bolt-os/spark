@@ -30,11 +30,10 @@
 
 use crate::{page_align_down, page_align_up, vmm::PAGE_SIZE};
 use core::{
-    ptr::NonNull,
+    ptr,
     sync::atomic::{AtomicUsize, Ordering},
 };
 use libsa::extern_sym;
-use spark::Region;
 use spin::mutex::SpinMutex;
 
 pub static MAX_PHYS_ADDR: AtomicUsize = AtomicUsize::new(0);
@@ -177,124 +176,207 @@ impl InitRanges {
     }
 }
 
-static PHYSMAP: SpinMutex<spark::FreeList> = SpinMutex::new(spark::FreeList::new_empty());
-
-/// Hand off the list of free physical frames to the kernel
-///
-/// # Safety
-///
-/// This should be one of the very last things that is called before control is passed
-/// to the kernel. All memory allocations will fail after this function returns.
-pub unsafe fn handoff() -> spark::FreeList {
-    let mut physmap = PHYSMAP.lock();
-    core::mem::take(&mut *physmap)
+#[repr(C)]
+#[derive(Debug)]
+struct Region {
+    base: usize,
+    num_frames: usize,
+    prev: *mut Region,
+    next: *mut Region,
 }
+
+impl Region {
+    const fn end(&self) -> usize {
+        self.base + PAGE_SIZE * self.num_frames
+    }
+}
+
+/// A doubly-linked list of usable memory ranges stored intrusively in the memory it describes
+#[repr(C)]
+#[derive(Debug)]
+struct FreeList {
+    head: *mut Region,
+    tail: *mut Region,
+}
+
+unsafe impl Send for FreeList {}
+
+impl FreeList {
+    const fn new() -> FreeList {
+        Self {
+            head: ptr::null_mut(),
+            tail: ptr::null_mut(),
+        }
+    }
+
+    unsafe fn remove_region(&mut self, region: *mut Region) {
+        assert!(!region.is_null());
+
+        let prev = (*region).prev;
+        let next = (*region).next;
+
+        if prev.is_null() {
+            self.head = next;
+        } else {
+            (*prev).next = next;
+        }
+        if next.is_null() {
+            self.tail = prev;
+        } else {
+            (*next).prev = prev;
+        }
+    }
+
+    unsafe fn insert_region(&mut self, mut base: usize, mut num_frames: usize) {
+        let mut prev = self.tail;
+        let mut next = ptr::null_mut();
+        while !prev.is_null() {
+            if (*prev).base < base {
+                break;
+            }
+            next = prev;
+            prev = (*prev).prev;
+        }
+
+        if !prev.is_null() && (*prev).end() == base {
+            base = (*prev).base;
+            num_frames += (*prev).num_frames;
+            prev = (*prev).prev;
+        }
+        if !next.is_null() {
+            let end = base + PAGE_SIZE * num_frames;
+            if end == (*next).base {
+                num_frames += (*next).num_frames;
+                next = (*next).next;
+            }
+        }
+
+        let new = base as *mut Region;
+        new.write(Region {
+            base,
+            num_frames,
+            prev,
+            next,
+        });
+
+        if prev.is_null() {
+            self.head = new;
+        } else {
+            (*prev).next = new;
+        }
+        if next.is_null() {
+            self.tail = new;
+        } else {
+            (*next).prev = new;
+        }
+    }
+}
+
+static PHYSMAP: SpinMutex<FreeList> = SpinMutex::new(FreeList::new());
 
 /// Allocate frames of physical memory
 pub fn alloc_frames(num_frames: usize) -> Option<usize> {
     let mut physmap = PHYSMAP.lock();
-    let mut regionp = physmap.tail;
+    let mut region = physmap.tail;
 
-    while let Some(mut region) = regionp {
-        let region = unsafe { region.as_mut() };
-
-        if region.num_frames >= num_frames {
-            region.num_frames -= num_frames;
-
-            if region.num_frames == 0 {
-                physmap.remove_region(region);
-            }
-
-            return Some(region.base + PAGE_SIZE * region.num_frames);
-        }
-
-        regionp = region.prev;
-    }
-
-    None
-}
-
-/// Allocate frames of physical memory aligned to a specific boundary
-///
-/// # Panics
-///
-/// This function will panic if `align` is not a power of two.
-pub fn alloc_frames_aligned(num_frames: usize, align: usize, low_memory: bool) -> Option<usize> {
-    assert!(align.is_power_of_two());
-    // let align = page_align_up!(align);
-
-    let mut physmap = PHYSMAP.lock();
-    let mut regionp = physmap.head;
-
-    while let Some(mut region) = regionp {
-        let region = unsafe { region.as_mut() };
-
-        if region.num_frames >= num_frames {
-            // how far would we have to increment the base address to make it aligned
-            let align_offset = align.wrapping_sub(region.base) & (align - 1);
-
-            if align_offset == 0 {
-                region.num_frames -= num_frames;
-                let base = if region.num_frames == 0 {
+    while !region.is_null() {
+        unsafe {
+            if (*region).num_frames >= num_frames {
+                (*region).num_frames -= num_frames;
+                if (*region).num_frames == 0 {
                     physmap.remove_region(region);
-                    region.base
-                } else {
-                    let base = region.base;
-                    region.base += num_frames * PAGE_SIZE;
-                    base
-                };
-
-                return Some(base);
+                }
+                return Some((*region).base + PAGE_SIZE * (*region).num_frames);
             }
-
-            // are there still enough frames if we increment the base?
-            let align_frames = align_offset / PAGE_SIZE;
-
-            if region.num_frames < align_frames + num_frames {
-                continue;
-            }
-
-            // are we execeeding a `low_memory` requirement?
-            let alloc_base = region.base + align_frames * PAGE_SIZE;
-            if low_memory && alloc_base + num_frames * PAGE_SIZE > u32::MAX as usize {
-                // the list is sorted, if this node exceeds the limit the rest will too.
-                return None;
-            }
-
-            // yes, pull those frames and split the entry
-            let new_base = region.base + PAGE_SIZE * (align_frames + num_frames);
-            let new_size = region.end() - new_base;
-
-            let new_node = unsafe {
-                let ptr = new_base as *mut Region;
-
-                ptr.write(Region {
-                    base: new_base,
-                    num_frames: new_size / PAGE_SIZE,
-                    next: region.next,
-                    prev: regionp,
-                });
-
-                NonNull::new_unchecked(ptr)
-            };
-
-            region.num_frames = align_frames;
-            region.next = Some(new_node);
-
-            if let Some(mut next) = region.next {
-                unsafe { next.as_mut().prev = Some(new_node) };
-            } else {
-                physmap.tail = Some(new_node);
-            }
-
-            return Some(alloc_base);
+            region = (*region).prev;
         }
-
-        regionp = region.next;
     }
 
     None
 }
+
+// /// Allocate frames of physical memory aligned to a specific boundary
+// ///
+// /// # Panics
+// ///
+// /// This function will panic if `align` is not a power of two.
+// pub fn alloc_frames_aligned(num_frames: usize, align: usize, low_memory: bool) -> Option<usize> {
+//     assert!(align.is_power_of_two());
+//     // let align = page_align_up!(align);
+//
+//     let mut physmap = PHYSMAP.lock();
+//     let mut region = physmap.head;
+//
+//     // while let Some(mut region) = regionp {
+//     while !region.is_null() {
+//         // let region = unsafe { region.as_mut() };
+//
+//         if region.num_frames >= num_frames {
+//             // how far would we have to increment the base address to make it aligned
+//             let align_offset = align.wrapping_sub(region.base) & (align - 1);
+//
+//             if align_offset == 0 {
+//                 region.num_frames -= num_frames;
+//                 let base = if region.num_frames == 0 {
+//                     physmap.remove_region(region);
+//                     region.base
+//                 } else {
+//                     let base = region.base;
+//                     region.base += num_frames * PAGE_SIZE;
+//                     base
+//                 };
+//
+//                 return Some(base);
+//             }
+//
+//             // are there still enough frames if we increment the base?
+//             let align_frames = align_offset / PAGE_SIZE;
+//
+//             if region.num_frames < align_frames + num_frames {
+//                 continue;
+//             }
+//
+//             // are we execeeding a `low_memory` requirement?
+//             let alloc_base = region.base + align_frames * PAGE_SIZE;
+//             if low_memory && alloc_base + num_frames * PAGE_SIZE > u32::MAX as usize {
+//                 // the list is sorted, if this node exceeds the limit the rest will too.
+//                 return None;
+//             }
+//
+//             // yes, pull those frames and split the entry
+//             let new_base = region.base + PAGE_SIZE * (align_frames + num_frames);
+//             let new_size = region.end() - new_base;
+//
+//             let new_node = unsafe {
+//                 let ptr = new_base as *mut Region;
+//
+//                 ptr.write(Region {
+//                     base: new_base,
+//                     num_frames: new_size / PAGE_SIZE,
+//                     next: region.next,
+//                     prev: regionp,
+//                 });
+//
+//                 NonNull::new_unchecked(ptr)
+//             };
+//
+//             region.num_frames = align_frames;
+//             region.next = Some(new_node);
+//
+//             if let Some(mut next) = region.next {
+//                 unsafe { next.as_mut().prev = Some(new_node) };
+//             } else {
+//                 physmap.tail = Some(new_node);
+//             }
+//
+//             return Some(alloc_base);
+//         }
+//
+//         regionp = region.next;
+//     }
+//
+//     None
+// }
 
 /// Free physical frames of memory
 ///
@@ -310,17 +392,17 @@ pub unsafe fn free_frames(base: usize, num_frames: usize) {
 /// Prints the current list of free physical frames
 pub fn print() {
     let physmap = PHYSMAP.lock();
-    let mut regionp = physmap.head;
-
-    while let Some(region) = regionp {
-        let region = unsafe { region.as_ref() };
-        println!(
-            "  {:#018x} -> {:#018x}, {} pages",
-            region.base(),
-            region.end(),
-            region.num_frames
-        );
-        regionp = region.next;
+    let mut region = physmap.head;
+    unsafe {
+        while !region.is_null() {
+            println!(
+                "  {:#018x} -> {:#018x}, {} pages",
+                (*region).base,
+                (*region).end(),
+                (*region).num_frames
+            );
+            region = (*region).next;
+        }
     }
 }
 

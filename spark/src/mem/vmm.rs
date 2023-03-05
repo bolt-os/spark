@@ -28,7 +28,7 @@
  * SPDX-License-Identifier: BSD-3-Clause
  */
 
-use crate::{pages_for, pmm, pmm::MAX_PHYS_ADDR};
+use crate::{dev::fdt, pages_for, pmm, pmm::MAX_PHYS_ADDR, BOOT_HART_ID};
 use alloc::collections::LinkedList;
 use core::{cmp, ptr, sync::atomic::Ordering};
 
@@ -420,29 +420,15 @@ impl PageTableEntry {
     }
 }
 
-pub fn init(vmspace: &mut AddressSpace) {
-    let pmap_size = cmp::max(0x100000000, MAX_PHYS_ADDR.load(Ordering::Relaxed) + 1);
-    let hhdm_base = vmspace.paging_mode().higher_half_start();
-
-    println!("Initializing {:?} paging.", vmspace.paging_mode());
-
-    vmspace
-        .map_pages(0, 0, pmap_size, MapFlags::RWX)
-        .expect("failed to create identity map");
-    vmspace
-        .map_pages(hhdm_base, 0, pmap_size, MapFlags::RWX)
-        .expect("failed to create higher-half map");
-
-    unsafe { vmspace.switch_to() };
-}
-
 /// Initialize virtual memory from the information in the FDT
 ///
 /// # Panics
 ///
 /// This function will panic if the initial mappings (identity map and HHDM) cannot be created.
 /// It also panics if a paging mode cannot be determined, however this really should be an error.
-pub fn init_from_fdt(fdt: &fdt::Fdt, hartid: usize) -> AddressSpace {
+pub fn init_from_fdt(want_5lvl_paging: bool) -> AddressSpace {
+    let fdt = fdt::get_fdt();
+    let hartid = BOOT_HART_ID.load(Ordering::Relaxed);
     /*
      * Determine the paging mode supported by the BSP, we assumme the
      * other cores we're interested in will support the same.
@@ -460,7 +446,14 @@ pub fn init_from_fdt(fdt: &fdt::Fdt, hartid: usize) -> AddressSpace {
         .expect("BSP has no `mmu-type` property")
     {
         "riscv,sv39" => PagingMode::Sv39,
-        "riscv,sv48" | "riscv,sv57" => PagingMode::Sv48,
+        "riscv,sv48" => PagingMode::Sv48,
+        "riscv,sv57" => {
+            if want_5lvl_paging {
+                PagingMode::Sv57
+            } else {
+                PagingMode::Sv48
+            }
+        }
         _ => panic!("unknown mmu-type"),
     };
 

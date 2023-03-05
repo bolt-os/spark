@@ -28,13 +28,20 @@
  * SPDX-License-Identifier: BSD-3-Clause
  */
 
-use core::cell::SyncUnsafeCell;
-
+use crate::BOOT_HART_ID;
 use ::fdt as libfdt;
+use core::{
+    cell::SyncUnsafeCell,
+    ptr,
+    sync::atomic::{AtomicPtr, Ordering},
+};
 
 static FDT: SyncUnsafeCell<Option<libfdt::Fdt>> = SyncUnsafeCell::new(None);
+pub static DTB_PTR: AtomicPtr<u8> = AtomicPtr::new(ptr::null_mut());
 
-pub fn init(hartid: usize, dtb_ptr: *mut u8) -> &'static libfdt::Fdt<'static> {
+pub fn init(dtb_ptr: *mut u8) -> &'static libfdt::Fdt<'static> {
+    DTB_PTR.store(dtb_ptr, Ordering::Relaxed);
+
     // "Install" the FDT.
     // The reference returned here has a 'static lifetime.
     let fdt = unsafe {
@@ -45,11 +52,15 @@ pub fn init(hartid: usize, dtb_ptr: *mut u8) -> &'static libfdt::Fdt<'static> {
 
     let bsp_node = fdt
         .cpus()
-        .find(|node| node.ids().first() == hartid)
+        .find(|node| node.ids().first() == BOOT_HART_ID.load(Ordering::Relaxed))
         .expect("no matching /cpus node for the boot hart");
 
     let timebase_freq = bsp_node.timebase_frequency();
     crate::time::init(timebase_freq as u64);
 
     fdt
+}
+
+pub fn get_fdt() -> &'static libfdt::Fdt<'static> {
+    unsafe { (*FDT.get()).as_ref().unwrap() }
 }

@@ -23,7 +23,7 @@ checksum = "bef38d45163c2f1dde094a7dfd33ccf595c92905c8f8f4fdc18d06fb1037718a"
 [[package]]
 name = "bolt-libelf"
 version = "0.1.0"
-source = "git+https://github.com/bolt-os/libelf#562c2e648a3690fea30bbca9dd3b050f846e681c"
+source = "git+https://github.com/bolt-os/libelf#cf8b22c2ff13723d53f0b5b5ffde3c9bca81217f"
 dependencies = [
  "bitflags",
 ]
