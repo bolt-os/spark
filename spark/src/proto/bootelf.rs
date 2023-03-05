@@ -28,6 +28,32 @@
  * SPDX-License-Identifier: BSD-3-Clause
  */
 
+//! `bootelf` protocol
+//!
+//! The `bootelf` protocol is a very simple boot protocol for ELF kernels.
+//! It provides nearly the same machine state as that of SBI, but the ELF is properly mapped
+//! into a virtual address space.
+//!
+//! # Memory Map
+//!
+//! In addition to the kernel image, two mappings of all physical memory are created:
+//!
+//! - an identity map (physical address == virtual address)
+//! - a direct map at the beginning of the higher half
+//!
+//! The beginning of the higher half depends on the paging mode, which can be determined by
+//! reading the `satp` register.
+//!
+//! # Registers
+//!
+//! - `a0` - hart ID
+//! - `a1` - physical address of DTB
+//! - `a2` - physical address of kernel image
+//! - `gp` - if present in the ELF, the value of the `__global_pointer$` symbol
+//! - `sstatus.SIE` and `sie` are set to 0, all interrupts are disabled
+//!
+//! All other registers are undefined.
+
 use crate::{
     config::{Entry, Value},
     dev::fdt::DTB_PTR,
