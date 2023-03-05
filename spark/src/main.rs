@@ -180,19 +180,17 @@ pub extern "C" fn spark_main(hartid: usize, dtb_ptr: *mut u8) -> ! {
     let boot_config = config::parse_config_file(&boot_config_data);
 
     let boot_entry = boot_config.entries.first().expect("no boot entry");
-    match boot_entry.param("protocol") {
-        Some(Value::String(proto)) => {
-            if *proto != "limine" {
-                todo!("limine or bust!!");
-            }
-        }
+    let protocol = match boot_entry.param("protocol") {
+        Some(Value::String(proto)) => *proto,
+        None => panic!("`protocol` parameter was not specified"),
         _ => panic!("`protocol` parameter is not a string"),
+    };
+
+    match protocol {
+        "bootelf" => proto::bootelf::main(config_file, boot_entry).unwrap(),
+        "limine" => proto::limine::main(config_file, boot_entry).unwrap(),
+        _ => panic!("protocol `{protocol}` is not supported"),
     }
-
-    // TODO: Parse bootloader config and find boot entry
-    //  Eventually, this is where we'd start an interactive console.
-
-    proto::limine::main(config_file, boot_entry).unwrap();
 }
 
 #[allow(dead_code)]

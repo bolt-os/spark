@@ -28,15 +28,20 @@
  * SPDX-License-Identifier: BSD-3-Clause
  */
 
-use core::{cell::SyncUnsafeCell, sync::atomic::Ordering};
-
-use ::fdt as libfdt;
-
 use crate::BOOT_HART_ID;
+use ::fdt as libfdt;
+use core::{
+    cell::SyncUnsafeCell,
+    ptr,
+    sync::atomic::{AtomicPtr, Ordering},
+};
 
 static FDT: SyncUnsafeCell<Option<libfdt::Fdt>> = SyncUnsafeCell::new(None);
+pub static DTB_PTR: AtomicPtr<u8> = AtomicPtr::new(ptr::null_mut());
 
 pub fn init(dtb_ptr: *mut u8) -> &'static libfdt::Fdt<'static> {
+    DTB_PTR.store(dtb_ptr, Ordering::Relaxed);
+
     // "Install" the FDT.
     // The reference returned here has a 'static lifetime.
     let fdt = unsafe {
