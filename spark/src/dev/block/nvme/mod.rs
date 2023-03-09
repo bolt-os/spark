@@ -35,7 +35,7 @@ use crate::{
         block::{self, BlockIo},
         pcie, DeviceDriver,
     },
-    io,
+    io, page_align_up,
     vmm::PAGE_SIZE,
 };
 use alloc::sync::Arc;
@@ -116,7 +116,7 @@ fn init_common(mut ctlr: Controller) -> crate::Result<()> {
         let lba_format = ns_info.lbaf[ns_info.flbas as usize];
         if lba_format.metadata_size() != 0 {
             log::warn!(
-                "skipping namespace #{nsid} with metdata size {}",
+                "skipping namespace #{nsid} with metadata size {}",
                 lba_format.metadata_size()
             );
             continue;
@@ -150,38 +150,63 @@ struct Namespace {
     max_tx_blocks: u64,
 }
 
+struct ChainedPrpLists {
+    lists: Vec<Box<PrpList>>,
+}
+
+#[repr(align(4096))]
 struct PrpList {
-    lists: Vec<[u64; 512]>,
+    prps: [u64; 512],
     count: usize,
 }
 
 impl PrpList {
-    fn new() -> Self {
-        Self {
-            lists: vec![],
-            count: 0,
+    fn new(addr: u64) -> Box<Self> {
+        Box::new(Self {
+            prps: {
+                let mut prps = [0; 512];
+                prps[0] = addr;
+                prps
+            },
+            count: 1,
+        })
+    }
+
+    fn push(&mut self, addr: u64) -> Option<Box<Self>> {
+        match self.count {
+            index @ ..=510 => {
+                self.prps[index] = addr;
+                self.count += 1;
+                None
+            }
+            index @ 511 => {
+                let new_list = Self::new(addr);
+                self.prps[index] = new_list.prps.as_ptr().addr() as u64;
+                self.count += 1;
+                Some(new_list)
+            }
+            _ => panic!(),
         }
+    }
+}
+
+impl ChainedPrpLists {
+    fn new() -> Self {
+        Self { lists: vec![] }
     }
 
     fn addr(&self) -> usize {
-        self.lists[0].as_ptr().addr()
+        self.lists[0].prps.as_ptr().addr()
     }
 
     fn push_addr(&mut self, addr: u64) {
-        let block = self.count / 512;
-        let mut index = self.count % 512;
-        if index == 0 {
-            // need new block
-            self.lists.push([0; 512]);
-            if self.lists.len() > 1 {
-                self.lists[block][index] = self.lists[block - 1][511];
-                self.lists[block - 1][511] = self.lists[block].as_ptr().addr() as u64;
-                index += 1;
-                self.count += 1;
+        if let Some(list) = self.lists.last_mut() {
+            if let Some(new_list) = list.push(addr) {
+                self.lists.push(new_list);
             }
+        } else {
+            self.lists.push(PrpList::new(addr));
         }
-        self.lists[block][index] = addr;
-        self.count += 1;
     }
 }
 
@@ -216,12 +241,11 @@ impl BlockIo for Namespace {
             let _list = if align_space < r_len {
                 // The transfer crosses at least 1 page boundary
                 let start = buf_ptr.addr() + align_space;
-
-                let remaning_len = r_len - align_space;
-                if remaning_len > PAGE_SIZE {
-                    // The tranfer crosses >= 2 pages, a PRP List is needed.
-                    let num_prps = remaning_len / PAGE_SIZE;
-                    let mut prp_list = PrpList::new();
+                let remaining_len = r_len - align_space;
+                if remaining_len > PAGE_SIZE {
+                    // The transfer crosses >= 2 pages, a PRP List is needed.
+                    let num_prps = page_align_up!(remaining_len) / PAGE_SIZE;
+                    let mut prp_list = ChainedPrpLists::new();
                     for i in 0..num_prps {
                         prp_list.push_addr((start + i * PAGE_SIZE) as u64);
                     }
@@ -240,7 +264,6 @@ impl BlockIo for Namespace {
             let mut ctlr = self.controller.lock();
             ctlr.io_command(IoCommand::Read)
                 .namespace_id(self.nsid)
-                // .data_ptr(DataPtr::Prp(buf.as_mut_ptr().addr() as u64, 0))
                 .data_ptr(DataPtr::Prp(prp[0], prp[1]))
                 .cdw10(addr as u32)
                 .cdw11((addr >> 32) as u32)
