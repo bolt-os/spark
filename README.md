@@ -20,7 +20,7 @@ from a directory on your host:
 
 ```
 -device nvme,serial=deadbeff,drive=disk1
--drive id=disk1,format=raw,if=none,file=path/to/disk.img
+-drive id=disk1,format=raw,if=none,file=fat:rw:path/to/directory
 ```
 
 Alternatively, you can create a disk image to use as the backing for the drive:
