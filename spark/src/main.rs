@@ -40,7 +40,6 @@
     naked_functions,                    // https://github.com/rust-lang/rust/issues/32408
     never_type,                         // https://github.com/rust-lang/rust/issues/35121
     new_uninit,                         // https://github.com/rust-lang/rust/issues/63291
-    once_cell,                          // https://github.com/rust-lang/rust/issues/74465
     pointer_byte_offsets,               // https://github.com/rust-lang/rust/issues/96283
     pointer_is_aligned,                 // https://github.com/rust-lang/rust/issues/96284
     result_option_inspect,              // https://github.com/rust-lang/rust/issues/91345
