@@ -97,7 +97,7 @@ static EXCEPTION_NAMES: &[Option<&str>] = &[
 ];
 
 #[no_mangle]
-fn trap_handler(tf: &mut TrapFrame) {
+extern "C" fn trap_handler(tf: &mut TrapFrame) {
     if tf.is_interrupt() {
         log::error!("unhandled interrupt #{}", tf.cause());
         return;
