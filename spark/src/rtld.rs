@@ -111,22 +111,22 @@ impl<'elf, 'a: 'elf> Rtld<'a, 'elf> {
         })
     }
 
-    pub fn set_relocation_offset(&mut self, offset: usize) {
-        assert!(
-            !self.flags.contains(RtldFlags::IMAGE_LOADED),
-            "the relocation offset cannot be changed once the image has been loaded"
-        );
-        self.reloc_offset = offset;
-    }
-
-    pub fn check_ptr<T>(&self, ptr: *const T) -> bool {
-        let obj_start = ptr.addr();
-        let obj_end = obj_start + size_of!(T);
-        let img_start = self.image_base;
-        let img_end = img_start + self.image_size;
-
-        img_start <= obj_start && obj_end <= img_end
-    }
+    //     pub fn set_relocation_offset(&mut self, offset: usize) {
+    //         assert!(
+    //             !self.flags.contains(RtldFlags::IMAGE_LOADED),
+    //             "the relocation offset cannot be changed once the image has been loaded"
+    //         );
+    //         self.reloc_offset = offset;
+    //     }
+    //
+    //     pub fn check_ptr<T>(&self, ptr: *const T) -> bool {
+    //         let obj_start = ptr.addr();
+    //         let obj_end = obj_start + size_of!(T);
+    //         let img_start = self.image_base;
+    //         let img_end = img_start + self.image_size;
+    //
+    //         img_start <= obj_start && obj_end <= img_end
+    //     }
 
     pub fn reloc(&self, addr: usize) -> usize {
         self.reloc_offset.wrapping_add(addr)
@@ -240,6 +240,7 @@ impl<'elf, 'a: 'elf> Rtld<'a, 'elf> {
 
         for reloc_entry in relocation_table {
             let location = self.reloc(reloc_entry.offset as usize);
+            let location = self.image_base + (location - self.load_base());
 
             match reloc_entry.kind() {
                 RelocKind::RISCV_NONE => {}
