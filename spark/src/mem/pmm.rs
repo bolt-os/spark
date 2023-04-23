@@ -28,7 +28,7 @@
  * SPDX-License-Identifier: BSD-3-Clause
  */
 
-use crate::{page_align_down, page_align_up, vmm::PAGE_SIZE};
+use crate::{page_align_down, page_align_up, pages_for, size_of, vmm::PAGE_SIZE};
 use core::{
     ptr,
     sync::atomic::{AtomicUsize, Ordering},
@@ -178,7 +178,7 @@ impl InitRanges {
 
 #[repr(C)]
 #[derive(Debug)]
-struct Region {
+pub struct Region {
     base: usize,
     num_frames: usize,
     prev: *mut Region,
@@ -197,6 +197,7 @@ impl Region {
 struct FreeList {
     head: *mut Region,
     tail: *mut Region,
+    len: usize,
 }
 
 unsafe impl Send for FreeList {}
@@ -206,6 +207,7 @@ impl FreeList {
         Self {
             head: ptr::null_mut(),
             tail: ptr::null_mut(),
+            len: 0,
         }
     }
 
@@ -225,6 +227,8 @@ impl FreeList {
         } else {
             (*next).prev = prev;
         }
+
+        self.len -= 1;
     }
 
     unsafe fn insert_region(&mut self, mut base: usize, mut num_frames: usize) {
@@ -269,6 +273,8 @@ impl FreeList {
         } else {
             (*next).prev = new;
         }
+
+        self.len += 1;
     }
 }
 
@@ -387,6 +393,51 @@ pub fn alloc_frames(num_frames: usize) -> Option<usize> {
 /// this is when the physical memory allocator is first initialized.
 pub unsafe fn free_frames(base: usize, num_frames: usize) {
     PHYSMAP.lock().insert_region(base, num_frames);
+}
+
+pub fn generate_limine_memory_map(
+    vmspace: &mut super::vmm::AddressSpace,
+) -> (*mut *mut limine::MemoryMapEntry, usize) {
+    let map = PHYSMAP.lock();
+
+    let needed = pages_for!((size_of!(usize) + size_of!(limine::MemoryMapEntry)) * map.len);
+    drop(map);
+
+    let buffer = alloc_frames(needed).unwrap() as *mut u8;
+
+    let map = PHYSMAP.lock();
+
+    unsafe {
+        let pointers = buffer.cast::<*mut limine::MemoryMapEntry>();
+        let entries = buffer
+            .add(size_of!(*mut limine::MemoryMapEntry) * map.len)
+            .cast::<limine::MemoryMapEntry>();
+
+        buffer.write_bytes(0, needed * PAGE_SIZE);
+
+        let mut i = 0;
+        let mut region = map.head;
+        while !region.is_null() {
+            let entry = entries.add(i);
+            pointers
+                .add(i)
+                .write(entry.with_addr(vmspace.higher_half_start() + entry.addr()));
+
+            entry.write(limine::MemoryMapEntry::new(
+                (*region).base,
+                (*region).num_frames * PAGE_SIZE,
+                limine::MemoryKind::Usable,
+            ));
+
+            region = (*region).next;
+            i += 1;
+        }
+
+        (
+            pointers.with_addr(vmspace.higher_half_start() + pointers.addr()),
+            i,
+        )
+    }
 }
 
 /// Prints the current list of free physical frames
