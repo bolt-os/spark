@@ -359,7 +359,7 @@ impl File for OpenFile {
                 .volume
                 .read(v_offset, &mut buf[buf_offset..][..tx_size as usize])?;
 
-            // If we read the reaminder of this extent, move on to the next one.
+            // If we read the remainder of this extent, move on to the next one.
             // Otherwise, just advance the offset.
             if tx_size == ext_rem {
                 self.cursor.extent += 1;
