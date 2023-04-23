@@ -34,7 +34,8 @@
 #![feature(
     custom_test_frameworks,
     prelude_import,
-    array_chunks,                       // https://github.com/rust-lang/rust/issues/74985
+    array_windows,                      // https://github.com/rust-lang/rust/issues/75027
+    asm_const,                          // https://github.com/rust-lang/rust/issues/93332
     get_mut_unchecked,                  // https://github.com/rust-lang/rust/issues/63292
     let_chains,                         // https://github.com/rust-lang/rust/issues/53667
     naked_functions,                    // https://github.com/rust-lang/rust/issues/32408
@@ -43,6 +44,9 @@
     pointer_byte_offsets,               // https://github.com/rust-lang/rust/issues/96283
     pointer_is_aligned,                 // https://github.com/rust-lang/rust/issues/96284
     result_option_inspect,              // https://github.com/rust-lang/rust/issues/91345
+    slice_flatten,                      // https://github.com/rust-lang/rust/issues/95629
+    slice_ptr_get,                      // https://github.com/rust-lang/rust/issues/74265
+    slice_ptr_len,                      // https://github.com/rust-lang/rust/issues/71146
     strict_provenance,                  // https://github.com/rust-lang/rust/issues/95228
     sync_unsafe_cell,                   // https://github.com/rust-lang/rust/issues/95439
 )]

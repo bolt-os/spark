@@ -30,273 +30,26 @@
 
 use crate::{
     config::{Entry, Value},
+    dev::{self, fdt::DTB_PTR},
     fs::File,
+    pmm,
     rtld::Rtld,
-    vmm,
+    size_of,
+    vmm::{self, PagingMode},
+    BOOT_HART_ID,
 };
 use alloc::ffi::CString;
-use anyhow::Result;
-use core::ffi::c_char;
+use core::{cmp, ffi::c_char, sync::atomic::Ordering};
 use elf::Elf;
-use limine::LiminePtr;
-
-#[derive(Debug)]
-pub enum LimineError {
-    BadRequest(RequestError),
-}
-
-impl From<RequestError> for LimineError {
-    fn from(err: RequestError) -> Self {
-        Self::BadRequest(err)
-    }
-}
-
-#[derive(Clone, Copy, Debug)]
-pub enum RequestError {
-    Unrecognized,
-    BadIdent,
-    Alignment,
-}
-
-#[derive(Clone, Copy)]
-#[allow(clippy::enum_variant_names)]
-enum Request<'a> {
-    BootloaderInfoRequest(&'a limine::BootloaderInfoRequest),
-    StackSizeRequest(&'a limine::StackSizeRequest),
-    HhdmRequest(&'a limine::HhdmRequest),
-    // Terminal
-    FramebufferRequest(&'a limine::FramebufferRequest),
-    FiveLevelPagingRequest(&'a limine::FiveLevelPagingRequest),
-    SmpRequest(&'a limine::SmpRequest),
-    MemoryMapRequest(&'a limine::MemoryMapRequest),
-    EntryPointRequest(&'a limine::EntryPointRequest),
-    KernelFileRequest(&'a limine::KernelFileRequest),
-    ModulesRequest(&'a limine::ModulesRequest),
-    RsdpRequest(&'a limine::RsdpRequest),
-    SmbiosRequest(&'a limine::SmbiosRequest),
-    EfiSystemTableRequest(&'a limine::EfiSystemTableRequest),
-    BootTimeRequest(&'a limine::BootTimeRequest),
-    KernelAddressRequest(&'a limine::KernelAddressRequest),
-    DtbRequest(&'a limine::DtbRequest),
-}
-
-#[repr(transparent)]
-#[derive(Clone, Copy)]
-struct Ident([u64; 2]);
-
-impl Request<'_> {
-    /// Attempt to create a new `Request` from a pointer
-    fn new_from_ptr<'a>(ptr: *const u8) -> Result<Request<'a>, RequestError> {
-        #[repr(C)]
-        #[derive(Clone, Copy, Debug)]
-        struct RequestHeader {
-            anchor: [u64; 2],
-            ident: [u64; 2],
-        }
-
-        #[allow(clippy::cast_ptr_alignment)] // Alignment is checked below.
-        let header_ptr = ptr.cast::<RequestHeader>();
-
-        if !header_ptr.is_aligned() {
-            return Err(RequestError::Alignment);
-        }
-
-        // SAFETY: We checked that the pointer is aligned and in bounds.
-        let header = unsafe { header_ptr.read() };
-
-        if header.anchor != [0xc7b1dd30df4c8b88, 0x0a82e883a194f07b] {
-            return Err(RequestError::BadIdent);
-        }
-
-        macro_rules! match_request {
-            ($name:ident) => {{
-                let ptr = ptr.cast::<limine::$name>();
-
-                if !ptr.is_aligned() {
-                    return Err(RequestError::Alignment);
-                }
-
-                // SAFETY: We checked that the pointer is *still* aligned and within bounds
-                // after being casted to the concrete type.
-                Request::$name(unsafe { &*ptr })
-            }};
-        }
-
-        Ok(match header.ident {
-            [0xf55038d8e2a1202f, 0x279426fcf5f59740] => match_request!(BootloaderInfoRequest),
-            [0x224ef0460a8e8926, 0xe1cb0fc25f46ea3d] => match_request!(StackSizeRequest),
-            [0x48dcf1cb8ad2b852, 0x63984e959a98244b] => match_request!(HhdmRequest),
-            [0x9d5827dcd881dd75, 0xa3148604f6fab11b] => match_request!(FramebufferRequest),
-            [0x95a67b819a1b857e, 0xa0b61b723b6a73e0] => match_request!(SmpRequest),
-            [0x67cf3d9d378a806f, 0xe304acdfc50c3c62] => match_request!(MemoryMapRequest),
-            [0xad97e90e83f1ed67, 0x31eb5d1c5ff23b69] => match_request!(KernelFileRequest),
-            [0x3e7e279702be32af, 0xca1c4f3bd1280cee] => match_request!(ModulesRequest),
-            [0x71ba76863cc55f63, 0xb2644a48c516a487] => match_request!(KernelAddressRequest),
-            [0xc8ac59310c2b0844, 0xa68d0c7265d38878] => todo!("TerminalRequest"),
-            [0x94469551da9b3192, 0xebe5e86db7382888] => match_request!(FiveLevelPagingRequest),
-            [0x13d86c035a1cd3e1, 0x2b0caa89d8f3026a] => match_request!(EntryPointRequest),
-            [0xc5e77b6b397e7b43, 0x27637845accdcf3c] => match_request!(RsdpRequest),
-            [0x9e9046f11e095391, 0xaa4a520fefbde5ee] => match_request!(SmbiosRequest),
-            [0x5ceba5163eaaf6d6, 0x0a6981610cf65fcc] => match_request!(EfiSystemTableRequest),
-            [0x502746e184c088aa, 0xfbc5ec83e6327893] => match_request!(BootTimeRequest),
-            [0xb40ddb48fb54bac7, 0x545081493f81ffb7] => match_request!(DtbRequest),
-            _ => {
-                println!(
-                    "limine: unrecognized request: {:#018x}, {:#018x}",
-                    header.ident[0], header.ident[1]
-                );
-                return Err(RequestError::Unrecognized);
-            }
-        })
-    }
-}
-
-fn leak_to_hhdm<T: ?Sized>(vmspace: &vmm::AddressSpace, b: Box<T>) -> *mut T {
-    let ptr = Box::leak(b) as *mut T;
-    ptr.with_addr(vmspace.higher_half_start() + ptr.addr())
-}
-
-fn box_and_leak_to_hhdm<T>(vmspace: &vmm::AddressSpace, x: T) -> *mut T {
-    leak_to_hhdm(vmspace, Box::new(x))
-}
-
-fn handle_requests(object: &mut Rtld, vmspace: &vmm::AddressSpace, requests: &[Request<'static>]) {
-    log::info!(
-        "{} request{}",
-        requests.len(),
-        if requests.len() == 1 { "" } else { "s" },
-    );
-
-    for request in requests {
-        use Request::*;
-
-        match request {
-            BootloaderInfoRequest(req) => {
-                let brand = {
-                    let s = CString::new("Spark").unwrap();
-                    let leaked = Box::leak(s.into_boxed_c_str());
-                    let ptr = leaked as *mut _ as *mut c_char;
-                    ptr.with_addr(vmspace.higher_half_start() + ptr.addr())
-                };
-
-                let version = {
-                    let s = CString::new(env!("CARGO_PKG_VERSION")).unwrap();
-                    let leaked = Box::leak(s.into_boxed_c_str());
-                    let ptr = leaked as *mut _ as *mut c_char;
-                    ptr.with_addr(vmspace.higher_half_start() + ptr.addr())
-                };
-
-                let response = box_and_leak_to_hhdm(vmspace, unsafe {
-                    limine::BootloaderInfo::new(
-                        LiminePtr::new_unchecked(brand),
-                        LiminePtr::new_unchecked(version),
-                    )
-                });
-
-                unsafe { req.set_response(LiminePtr::new_unchecked(response)) };
-            }
-            HhdmRequest(req) => {
-                log::info!("HHDM");
-                let response =
-                    box_and_leak_to_hhdm(vmspace, limine::Hhdm::new(vmspace.higher_half_start()));
-                unsafe { req.set_response(LiminePtr::new_unchecked(response)) };
-            }
-            KernelAddressRequest(req) => {
-                log::info!("KERN AADDR");
-                let response = {
-                    let r = limine::KernelAddress::new(object.image_base, object.load_base());
-                    let leaked = Box::leak(Box::new(r));
-                    let ptr = leaked as *mut limine::KernelAddress;
-                    ptr.with_addr(vmspace.higher_half_start() + ptr.addr())
-                };
-
-                unsafe { req.set_response(LiminePtr::new_unchecked(response)) };
-            }
-
-            _req => {}
-        }
-    }
-}
-
-const COMMON_REQUEST_MAGIC: [u8; 16] = [
-    0x88, 0x8b, 0x4c, 0xdf, 0x30, 0xdd, 0xb1, 0xc7, 0x7b, 0xf0, 0x94, 0xa1, 0x83, 0xe8, 0x82, 0x0a,
-];
-
-/// Returns a list of the virtual addresses of the requests
-fn get_request_pointers(object: &Rtld) -> Vec<Request<'static>> {
-    if let Some(section) = object.elf.find_section(".limine_reqs") {
-        // SAFETY: It be what it be, we have no way to validate this.
-        unsafe { section.table::<usize>() }
-            .iter()
-            .map(|addr| {
-                let addr = object.to_image_ptr(*addr);
-                Request::new_from_ptr(addr as *const u8).unwrap()
-            })
-            .collect()
-    } else {
-        let mut requests = vec![];
-        for segment in object.elf.segments() {
-            for (i, chunk) in segment.file_data().array_chunks::<16>().enumerate() {
-                if *chunk == COMMON_REQUEST_MAGIC {
-                    let addr = segment.virtual_address() as usize + i * 16;
-                    requests.push(
-                        Request::new_from_ptr(object.to_image_ptr(addr) as *const _).unwrap(),
-                    );
-                }
-            }
-        }
-        requests
-    }
-}
-
-pub fn main(mut fs: Box<dyn File>, config: &Entry) -> anyhow::Result<!> {
-    let config = parse_config_entry(config);
-
-    let kernel_path = config
-        .kernel_path
-        .strip_prefix("boot://")
-        .expect("only `boot://` paths are currently supported");
-    let kernel_data = fs
-        .open(kernel_path)
-        .expect("failed to open path")
-        .read_to_end()
-        .expect("failed to read kernel file");
-    let kernel_elf = Elf::new(&kernel_data).unwrap();
-
-    let mut rtld = Rtld::new(&kernel_elf).unwrap();
-    rtld.load_image();
-
-    let requests = get_request_pointers(&rtld);
-    let want_5lvl_paging = requests
-        .iter()
-        .any(|req| matches!(&req, Request::FiveLevelPagingRequest(_)));
-
-    let mut vmspace = vmm::init_from_fdt(want_5lvl_paging);
-    rtld.map_image(&mut vmspace).unwrap();
-    rtld.do_relocations();
-
-    handle_requests(&mut rtld, &vmspace, &requests);
-
-    let stack = leak_to_hhdm(&vmspace, vec![0u8; 64 * 1024].into_boxed_slice());
-    let stack_ptr = stack.addr() + 64 * 1024;
-    log::info!("SPINUP");
-
-    fn get_global_ptr(elf: &Elf) -> Option<usize> {
-        let symbol_table = elf.symbol_table()?;
-        let symbol = symbol_table.find(|sym| sym.name() == Some("__global_pointer$"))?;
-        Some(symbol.value() as usize)
-    }
-
-    unsafe {
-        vmspace.switch_to();
-        spinup(
-            rtld.reloc(rtld.elf.entry_point() as _),
-            stack_ptr,
-            get_global_ptr(&kernel_elf).unwrap_or_default(),
-            0,
-        );
-    }
-}
+use limine::{
+    BootTime, BootTimeRequest, BootloaderInfo, BootloaderInfoRequest, Dtb, DtbRequest,
+    EfiSystemTable, EfiSystemTableRequest, EntryPoint, EntryPointRequest, FramebufferRequest,
+    Framebuffers, Hhdm, HhdmRequest, KernelAddress, KernelAddressRequest, KernelFile,
+    KernelFileRequest, MemoryMap, MemoryMapRequest, Modules, ModulesRequest, PagingModeRequest,
+    PagingModeResponse, PagingModeResponseFlags, Rsdp, RsdpRequest, Smbios, SmbiosRequest, Smp,
+    SmpFlags, SmpInfo, SmpRequest, StackSize, StackSizeRequest, Uuid,
+};
+use memoffset::offset_of;
 
 #[derive(Debug)]
 pub struct ConfigEntry<'src> {
@@ -365,25 +118,470 @@ fn parse_config_entry<'src>(boot_entry: &Entry<'src>) -> ConfigEntry<'src> {
     }
 }
 
-/// Pass off control to the kernel
-///
-/// All registers should be cleared to zero (we need to keep one to hold the jump address),
-/// disable interrupts and clear the `stvec` CSR.
-#[naked]
-unsafe extern "C" fn spinup(
-    entry_point: usize,
-    stack_ptr: usize,
-    global_ptr: usize,
-    tp: usize,
-) -> ! {
-    asm!(
-        r#"
-            mv      t0, a0      // entry point
-            mv      sp, a1      // stack pointer
-            mv      gp, a2      // global pointer
-            mv      tp, a3      // thread pointer
+const REQUEST_ANCHOR: [usize; 2] = [0xc7b1dd30df4c8b88, 0x0a82e883a194f07b];
+const DEFAULT_STACK_SIZE: usize = 64 * 1024;
 
-            mv      a0, zero
+#[derive(Default)]
+struct Requests<'a> {
+    count: usize,
+    bootloader_info: Option<&'a BootloaderInfoRequest>,
+    stack_size: Option<&'a StackSizeRequest>,
+    direct_map: Option<&'a HhdmRequest>,
+    framebuffer: Option<&'a FramebufferRequest>,
+    smp: Option<&'a SmpRequest>,
+    memory_map: Option<&'a MemoryMapRequest>,
+    entry_point: Option<&'a EntryPointRequest>,
+    kernel_file: Option<&'a KernelFileRequest>,
+    modules: Option<&'a ModulesRequest>,
+    rsdp: Option<&'a RsdpRequest>,
+    smbios: Option<&'a SmbiosRequest>,
+    efi_system_table: Option<&'a EfiSystemTableRequest>,
+    boot_time: Option<&'a BootTimeRequest>,
+    kernel_addr: Option<&'a KernelAddressRequest>,
+    device_tree: Option<&'a DtbRequest>,
+    paging_mode: Option<&'a PagingModeRequest>,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct RequestHeader {
+    anchor: [usize; 2],
+    ident: [usize; 2],
+}
+
+unsafe fn request_from_ptr(rtld: &Rtld, requests: &mut Requests, addr: usize, limine_reqs: bool) {
+    let ptr = rtld.to_image_ptr(addr) as *const u8;
+    let header = &*ptr.cast::<RequestHeader>();
+
+    if header.anchor != REQUEST_ANCHOR {
+        if limine_reqs {
+            log::error!("ignoring `.limine_reqs` request ({addr:#x}) with invalid anchor");
+        } else {
+            unreachable!();
+        }
+    }
+
+    fn check<'a, T: 'a>(rtld: &Rtld, req: &mut Option<&'a T>, new: &'a T, name: &str) -> bool {
+        if let Some(chosen) = *req {
+            let chosen = chosen as *const T as usize;
+            let chosen = rtld.load_base() + (chosen - rtld.image_base);
+            let new = new as *const T as usize;
+            let new = rtld.load_base() + (new - rtld.image_base);
+            log::warn!("ignoring duplicate request ({new:#x}) for {name}");
+            log::warn!("using first request found ({chosen:#x})");
+            false
+        } else {
+            *req = Some(new);
+            true
+        }
+    }
+
+    macro_rules! m {
+        ($type:ty, $name:ident) => {{
+            requests.count += check(
+                rtld,
+                &mut requests.$name,
+                &*ptr.cast::<<$type as limine::Feature>::Request>(),
+                stringify!($type),
+            ) as usize;
+        }};
+    }
+    match header.ident {
+        [0xf55038d8e2a1202f, 0x279426fcf5f59740] => m!(BootloaderInfo, bootloader_info),
+        [0x224ef0460a8e8926, 0xe1cb0fc25f46ea3d] => m!(StackSize, stack_size),
+        [0x48dcf1cb8ad2b852, 0x63984e959a98244b] => m!(Hhdm, direct_map),
+        [0x9d5827dcd881dd75, 0xa3148604f6fab11b] => m!(Framebuffers, framebuffer),
+        [0x95a67b819a1b857e, 0xa0b61b723b6a73e0] => m!(Smp, smp),
+        [0x67cf3d9d378a806f, 0xe304acdfc50c3c62] => m!(MemoryMap, memory_map),
+        [0xad97e90e83f1ed67, 0x31eb5d1c5ff23b69] => m!(KernelFile, kernel_file),
+        [0x3e7e279702be32af, 0xca1c4f3bd1280cee] => m!(Modules, modules),
+        [0x71ba76863cc55f63, 0xb2644a48c516a487] => m!(KernelAddress, kernel_addr),
+        [0x13d86c035a1cd3e1, 0x2b0caa89d8f3026a] => m!(EntryPoint, entry_point),
+        [0xc5e77b6b397e7b43, 0x27637845accdcf3c] => m!(Rsdp, rsdp),
+        [0x9e9046f11e095391, 0xaa4a520fefbde5ee] => m!(Smbios, smbios),
+        [0x5ceba5163eaaf6d6, 0x0a6981610cf65fcc] => m!(EfiSystemTable, efi_system_table),
+        [0x502746e184c088aa, 0xfbc5ec83e6327893] => m!(BootTime, boot_time),
+        [0xb40ddb48fb54bac7, 0x545081493f81ffb7] => m!(Dtb, device_tree),
+        [0x95c1a0edab0944cb, 0xa4e5cb3842f7488a] => m!(PagingModeResponse, paging_mode),
+        [0x94469551da9b3192, 0xebe5e86db7382888] => {
+            log::warn!("the 5-level paging request is x86_64-specific and will be ignored");
+            log::warn!("use the paging mode request instead");
+        }
+        id => log::error!("unknown request detected: {id:016x?}"),
+    }
+}
+
+/// Returns a list of the virtual addresses of the requests
+fn get_request_pointers(rtld: &Rtld, requests: &mut Requests) {
+    if let Some(section) = rtld.elf.find_section(".limine_reqs") {
+        let limine_reqs = unsafe { section.table::<usize>() };
+        for &addr in limine_reqs {
+            unsafe { request_from_ptr(rtld, requests, addr, true) };
+        }
+    } else {
+        // Scan the executable for requests. They will be at 8-byte alignments.
+        for segment in rtld.elf.segments() {
+            for (i, chunk) in segment
+                .file_data()
+                .array_windows::<16>()
+                .enumerate()
+                .step_by(8)
+            {
+                if *chunk == REQUEST_ANCHOR.map(usize::to_ne_bytes).flatten() {
+                    let addr = segment.virtual_address() as usize + i;
+                    unsafe { request_from_ptr(rtld, requests, addr, false) };
+                }
+            }
+        }
+    }
+}
+
+const _: () = {
+    assert!(limine::PagingMode::Sv39 as u8 == PagingMode::Sv39 as u8);
+    assert!(limine::PagingMode::Sv48 as u8 == PagingMode::Sv48 as u8);
+    assert!(limine::PagingMode::Sv57 as u8 == PagingMode::Sv57 as u8);
+};
+
+impl From<limine::PagingMode> for PagingMode {
+    fn from(value: limine::PagingMode) -> Self {
+        match value {
+            limine::PagingMode::Sv39 => PagingMode::Sv39,
+            limine::PagingMode::Sv48 => PagingMode::Sv48,
+            limine::PagingMode::Sv57 => PagingMode::Sv57,
+        }
+    }
+}
+impl From<PagingMode> for limine::PagingMode {
+    fn from(value: PagingMode) -> Self {
+        match value {
+            PagingMode::Sv39 => limine::PagingMode::Sv39,
+            PagingMode::Sv48 => limine::PagingMode::Sv48,
+            PagingMode::Sv57 => limine::PagingMode::Sv57,
+        }
+    }
+}
+
+fn ptr_to_hhdm<T: ?Sized>(vmspace: &vmm::AddressSpace, ptr: *mut T) -> *mut T {
+    ptr.with_addr(vmspace.higher_half_start() + ptr.addr())
+}
+
+fn leak_hhdm<T>(vmspace: &vmm::AddressSpace, val: T) -> *mut T {
+    ptr_to_hhdm(vmspace, Box::leak(Box::new(val)))
+}
+
+fn leak_hhdm_boxed<T: ?Sized>(vmspace: &vmm::AddressSpace, b: Box<T>) -> *mut T {
+    ptr_to_hhdm(vmspace, Box::leak(b))
+}
+
+fn leak_hhdm_vec<T>(vmspace: &vmm::AddressSpace, v: Vec<T>) -> *mut [T] {
+    leak_hhdm_boxed(vmspace, v.into_boxed_slice())
+}
+
+fn leak_hhdm_cstr(vmspace: &vmm::AddressSpace, s: &str) -> *mut c_char {
+    let cstring = Box::leak(CString::new(s).unwrap().into_boxed_c_str());
+    ptr_to_hhdm(vmspace, cstring.as_ptr().cast_mut())
+}
+
+#[allow(clippy::too_many_lines)]
+pub fn main(mut fs: Box<dyn File>, config: &Entry) -> anyhow::Result<!> {
+    let config = parse_config_entry(config);
+
+    let kernel_path = config
+        .kernel_path
+        .strip_prefix("boot://")
+        .expect("only `boot://` paths are currently supported");
+    let mut kernel_file = fs.open(kernel_path).expect("failed to open path");
+    let kernel_data = kernel_file
+        .read_to_end()
+        .expect("failed to read kernel file")
+        .into_boxed_slice();
+    let kernel_elf = Elf::new(&kernel_data).unwrap();
+
+    let mut rtld = Rtld::new(&kernel_elf).unwrap();
+    rtld.load_image();
+
+    let mut requests = Requests::default();
+    get_request_pointers(&rtld, &mut requests);
+    log::info!(
+        "{} request{}",
+        requests.count,
+        if requests.count == 1 { "" } else { "s" }
+    );
+
+    let max_paging_mode = vmm::get_max_paging_mode();
+    let mut paging_mode = PagingMode::Sv39;
+
+    if let Some(req) = requests.paging_mode {
+        let req_mode = req.mode.into();
+
+        paging_mode = cmp::min(max_paging_mode, req_mode);
+        if paging_mode != req.mode.into() {
+            log::info!(
+                "requested paging mode ({:?}) not supported, using {:?}",
+                req_mode,
+                paging_mode
+            );
+        }
+    }
+
+    let mut vmspace = vmm::init(paging_mode);
+    rtld.map_image(&mut vmspace).unwrap();
+    rtld.do_relocations();
+
+    // Paging Mode
+    if let Some(req) = requests.paging_mode {
+        let resp = PagingModeResponse::new(paging_mode.into(), PagingModeResponseFlags::empty());
+        unsafe { req.set_response(leak_hhdm(&vmspace, resp)) };
+    }
+
+    // Boot Info
+    if let Some(req) = requests.bootloader_info {
+        let brand = leak_hhdm_cstr(&vmspace, env!("CARGO_PKG_NAME"));
+        let version = leak_hhdm_cstr(&vmspace, env!("CARGO_PKG_VERSION"));
+
+        unsafe {
+            let resp = BootloaderInfo::new(brand, version);
+            req.set_response(leak_hhdm(&vmspace, resp));
+        }
+    }
+
+    // Direct Map
+    if let Some(req) = requests.direct_map {
+        let resp = Hhdm::new(vmspace.higher_half_start());
+        unsafe { req.set_response(leak_hhdm(&vmspace, resp)) };
+    }
+
+    // Device Tree
+    if let Some(req) = requests.device_tree {
+        let resp = Dtb::new(ptr_to_hhdm(&vmspace, DTB_PTR.load(Ordering::Relaxed)));
+        unsafe { req.set_response(leak_hhdm(&vmspace, resp)) };
+    }
+
+    // Framebuffer
+    if let Some(_req) = requests.framebuffer {
+        log::warn!("TODO: FramebufferRequest");
+    }
+
+    // RSDP
+    if let Some(_req) = requests.rsdp {
+        log::warn!("TODO: RsdpRequest");
+    }
+
+    // SMBIOS
+    if let Some(_req) = requests.smbios {
+        log::warn!("TODO: SmbiosRequest");
+    }
+
+    // EFI System Table
+    if let Some(_req) = requests.efi_system_table {
+        log::warn!("TODO: EfiSystemTableRequest");
+    }
+
+    // Modules
+    if let Some(req) = requests.modules {
+        let mut modules = vec![];
+        for module in config.modules {
+            let path = module
+                .path
+                .strip_prefix("boot://")
+                .expect("only `boot://` paths are currently supported");
+
+            log::debug!("loading module `{path}`");
+
+            let mut file = match fs.open(path) {
+                Ok(file) => file,
+                Err(err) => {
+                    log::error!("failed to open module `{path}`: {err:?}");
+                    continue;
+                }
+            };
+            let data = match file.read_to_end() {
+                Ok(data) => data.into_boxed_slice(),
+                Err(err) => {
+                    log::error!("failed to read module `{path}`: {err:?}");
+                    continue;
+                }
+            };
+
+            let data = leak_hhdm_boxed(&vmspace, data);
+            let path = leak_hhdm_cstr(&vmspace, path);
+            let cmdline = module.cmdline.map(|s| leak_hhdm_cstr(&vmspace, s));
+            let file = unsafe {
+                limine::File::new(
+                    data.as_mut_ptr(),
+                    data.len(),
+                    path,
+                    cmdline,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    Uuid::default(),
+                    Uuid::default(),
+                    Uuid::default(),
+                )
+            };
+
+            modules.push(leak_hhdm(&vmspace, file));
+        }
+
+        let modules = leak_hhdm_vec(&vmspace, modules);
+        unsafe {
+            let resp = Modules::new(modules.as_mut_ptr(), modules.len());
+            req.set_response(leak_hhdm(&vmspace, resp));
+        }
+    }
+
+    // Entry Point
+    let entry_point = if let Some(entry_point_req) = requests.entry_point {
+        let resp = EntryPoint::new();
+        unsafe { entry_point_req.set_response(leak_hhdm(&vmspace, resp)) };
+        entry_point_req.entry as usize
+    } else {
+        rtld.reloc(rtld.elf.entry_point() as _)
+    };
+
+    // Kernel Address
+    if let Some(req) = requests.kernel_addr {
+        let resp = KernelAddress::new(rtld.image_base, rtld.load_base());
+        unsafe { req.set_response(leak_hhdm(&vmspace, resp)) };
+    }
+
+    // Kernel File
+    if let Some(req) = requests.kernel_file {
+        let data = leak_hhdm_boxed(&vmspace, kernel_data);
+        let path = leak_hhdm_cstr(&vmspace, kernel_path);
+        let cmdline = config.cmdline.map(|s| leak_hhdm_cstr(&vmspace, s));
+        unsafe {
+            // XXX: Identifiers!!
+            let file = limine::File::new(
+                data.as_mut_ptr(),
+                data.len(),
+                path,
+                cmdline,
+                0,
+                0,
+                0,
+                0,
+                0,
+                Uuid::default(),
+                Uuid::default(),
+                Uuid::default(),
+            );
+            let resp = KernelFile::new(leak_hhdm(&vmspace, file));
+            req.set_response(leak_hhdm(&vmspace, resp));
+        }
+    }
+
+    // Boot Time
+    let boot_time_response = if let Some(req) = requests.boot_time {
+        let phys_leaked = Box::leak(Box::new(BootTime::new(0)));
+        unsafe { req.set_response(ptr_to_hhdm(&vmspace, phys_leaked)) };
+        Some(phys_leaked)
+    } else {
+        None
+    };
+
+    // Stack Size
+    let stack_size = if let Some(req) = requests.stack_size {
+        let resp = StackSize::new();
+        unsafe { req.set_response(leak_hhdm(&vmspace, resp)) };
+        req.stack_size
+    } else {
+        DEFAULT_STACK_SIZE
+    };
+
+    // fn get_global_ptr(elf: &Elf) -> Option<usize> {
+    //     let symbol_table = elf.symbol_table()?;
+    //     let symbol = symbol_table.find(|sym| sym.name() == Some("__global_pointer$"))?;
+    //     Some(symbol.value() as usize)
+    // }
+    // let global_ptr = get_global_ptr(&kernel_elf).unwrap_or_default();
+    let global_ptr = 0;
+
+    // SMP
+    if let Some(req) = requests.smp {
+        let bsp_hartid = BOOT_HART_ID.load(Ordering::Relaxed);
+        let fdt = dev::fdt::get_fdt();
+
+        let mut cpus = vec![];
+        for cpu in fdt.cpus() {
+            let hartid = cpu.ids().first();
+            if hartid == bsp_hartid {
+                // Skip this hart.
+                continue;
+            }
+
+            let info = leak_hhdm(&vmspace, SmpInfo::new(0, hartid));
+
+            let stack = vec![0u8; stack_size].into_boxed_slice();
+            let stack = Box::into_raw(stack);
+            let stack = stack.cast::<u8>();
+            let stack_ptr = stack.addr() + (stack_size - size_of!(ApPayload));
+            unsafe {
+                stack
+                    .add(stack_size - size_of!(ApPayload))
+                    .cast::<ApPayload>()
+                    .write(ApPayload {
+                        satp: vmspace.satp(),
+                        gp: global_ptr,
+                        sp: vmspace.higher_half_start() + stack.addr() + stack_size,
+                        smp_info: info,
+                    });
+            };
+
+            if let Err(err) = sbi::hsm::hart_start(hartid, ap_spinup as usize, stack_ptr) {
+                log::error!("smp: failed to start ap (hartid = {hartid}): {err:?}");
+                // XXX: Unleak `smp` and free it.
+                continue;
+            }
+
+            cpus.push(info);
+        }
+
+        let cpus = leak_hhdm_vec(&vmspace, cpus);
+        unsafe {
+            let resp = Smp::new(SmpFlags::empty(), bsp_hartid, cpus.as_mut_ptr(), cpus.len());
+            req.set_response(leak_hhdm(&vmspace, resp));
+        }
+    }
+
+    let stack = leak_hhdm_boxed(&vmspace, vec![0u8; stack_size].into_boxed_slice());
+
+    if let Some(_boot_time) = boot_time_response {
+        log::warn!("TODO: boot time request");
+    }
+
+    // Drop all memory we can before generating the memory map.
+    // TODO: Make this cleaner/generic.
+    // XXX: This faults????
+    // *crate::dev::block::DISKS.write() = vec![];
+    drop(fs);
+
+    // Memory Map
+    if let Some(req) = requests.memory_map {
+        let (entries, len) = pmm::generate_limine_memory_map(&mut vmspace);
+        unsafe {
+            let resp = MemoryMap::new(entries, len);
+            req.set_response(leak_hhdm(&vmspace, resp));
+        }
+    }
+
+    // ===================================================
+    //      NO MEMORY ALLOCATION AFTER THIS POINT !!!
+    // ===================================================
+
+    let stack_ptr = stack.addr() + stack_size;
+    unsafe {
+        vmspace.switch_to();
+        spinup(entry_point, stack_ptr, global_ptr);
+    }
+}
+
+macro_rules! zero_regs {
+    () => {
+        "
             mv      a1, zero
             mv      a2, zero
             mv      a3, zero
@@ -409,16 +607,75 @@ unsafe extern "C" fn spinup(
             mv      t4, zero
             mv      t5, zero
             mv      t6, zero
-
+            mv      tp, zero
             mv      ra, zero
+        "
+    };
+}
 
+/// Pass off control to the kernel
+///
+/// All registers should be cleared to zero (we need to keep one to hold the jump address),
+/// disable interrupts and clear the `stvec` CSR.
+#[naked]
+unsafe extern "C" fn spinup(entry_point: usize, stack_ptr: usize, global_ptr: usize) -> ! {
+    asm!(
+        "
+            mv      t0, a0      // entry point
+            mv      sp, a1      // stack pointer
+            mv      gp, a2      // global pointer
+            mv      a0, zero
+        ",
+        zero_regs!(),
+        "
             csrci   sstatus, 0x2
             csrw    sie, zero
             csrw    stvec, zero
             csrw    sscratch, zero
 
             jr      t0
-        "#,
+        ",
         options(noreturn)
     )
+}
+
+#[repr(C)]
+struct ApPayload {
+    satp: usize,
+    gp: usize,
+    sp: usize,
+    smp_info: *mut SmpInfo,
+}
+
+#[naked]
+unsafe extern "C" fn ap_spinup() -> ! {
+    asm!(
+        "
+            ld      a0, {ap_smp_info}(a1)
+            ld      sp, {ap_sp}(a1)
+            ld      gp, {ap_gp}(a1)
+            ld      t0, {ap_satp}(a1)
+            csrw    satp, t0
+            csrci   sstatus, 0x2 // SIE
+            csrw    sie, zero
+            csrw    stvec, zero
+            csrw    sscratch, zero
+        ",
+        zero_regs!(),
+        "
+        1:
+            // pause
+            .insn i 0x0F, 0, x0, x0, 0x010
+            fence   w, r
+            ld      t0, 24(a0)
+            beqz    t0, 1b
+            jr      t0
+            unimp
+        ",
+        ap_satp = const offset_of!(ApPayload, satp),
+        ap_gp = const offset_of!(ApPayload, gp),
+        ap_sp = const offset_of!(ApPayload, sp),
+        ap_smp_info = const offset_of!(ApPayload, smp_info),
+        options(noreturn)
+    );
 }
