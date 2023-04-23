@@ -30,12 +30,16 @@
 
 use crate::{dev::fdt, pages_for, pmm, pmm::MAX_PHYS_ADDR, BOOT_HART_ID};
 use alloc::collections::LinkedList;
-use core::{cmp, ptr, sync::atomic::Ordering};
+use core::{
+    cmp, ptr,
+    sync::atomic::{AtomicUsize, Ordering},
+};
 
 pub const PAGE_SHIFT: u32 = 12;
 pub const PAGE_SIZE: usize = 1 << PAGE_SHIFT;
 
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, PartialOrd)]
+#[repr(usize)]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum PagingMode {
     Sv39 = 8,
     Sv48 = 9,
@@ -86,6 +90,7 @@ pub struct AddressSpace {
     root: usize,
     mode: PagingMode,
     asid: u16,
+    #[allow(clippy::linkedlist)]
     maps: LinkedList<Mapping>,
 }
 
@@ -154,6 +159,10 @@ impl AddressSpace {
         self.maps.iter()
     }
 
+    pub fn satp(&self) -> usize {
+        ((self.mode as usize) << 60) | ((self.asid as usize) << 44) | (self.root >> 12)
+    }
+
     /// Switch to this address space
     ///
     /// # Safety
@@ -162,11 +171,7 @@ impl AddressSpace {
     /// mapped into this address space.
     pub unsafe fn switch_to(&self) {
         #[cfg(target_arch = "riscv64")]
-        {
-            let satp =
-                ((self.mode as usize) << 60) | ((self.asid as usize) << 44) | (self.root >> 12);
-            asm!("csrw satp, {}", in(reg) satp, options(nostack, preserves_flags));
-        }
+        asm!("csrw satp, {}", in(reg) self.satp(), options(nostack, preserves_flags));
     }
 
     pub fn higher_half_start(&self) -> usize {
@@ -304,10 +309,8 @@ impl MapFlags {
     fn map_level(self) -> usize {
         if self.contains(MapFlags::HUGE1G) {
             2
-        } else if self.contains(MapFlags::HUGE2M) {
-            1
         } else {
-            0
+            usize::from(self.contains(MapFlags::HUGE2M))
         }
     }
 
@@ -420,42 +423,59 @@ impl PageTableEntry {
     }
 }
 
-/// Initialize virtual memory from the information in the FDT
+/// Determine the maximum supported paging mode as reported by the Device Tree
 ///
 /// # Panics
 ///
-/// This function will panic if the initial mappings (identity map and HHDM) cannot be created.
-/// It also panics if a paging mode cannot be determined, however this really should be an error.
-pub fn init_from_fdt(want_5lvl_paging: bool) -> AddressSpace {
+/// This function may panic if the required information is not available.
+pub fn get_max_paging_mode() -> PagingMode {
+    use ::fdt::node::NodeProperty;
+
+    static MAX_PAGING_MODE: AtomicUsize = AtomicUsize::new(!0);
+
+    let paging_mode = MAX_PAGING_MODE.load(Ordering::Relaxed);
+    if paging_mode != !0 {
+        // SAFETY: The value is only ever changed from !0 to a valid discriminant.
+        return unsafe { core::mem::transmute(paging_mode) };
+    }
+
     let fdt = fdt::get_fdt();
     let hartid = BOOT_HART_ID.load(Ordering::Relaxed);
+
     /*
      * Determine the paging mode supported by the BSP, we assumme the
      * other cores we're interested in will support the same.
-     *
-     * Default to Sv48 if available, falling back to Sv39.
-     * Eventually we'll want to enable Sv57 if requested by the bootloader, which
-     * means we need to read the config file before setting up paging.
      */
     let paging_mode = match fdt
         .find_all_nodes("/cpus/cpu")
-        .find(|node| node.property("reg").and_then(|prop| prop.as_usize()) == Some(hartid))
+        .find(|node| node.property("reg").and_then(NodeProperty::as_usize) == Some(hartid))
         .expect("no matching FDT node for the BSP??")
         .property("mmu-type")
-        .and_then(|prop| prop.as_str())
+        .and_then(NodeProperty::as_str)
         .expect("BSP has no `mmu-type` property")
     {
         "riscv,sv39" => PagingMode::Sv39,
         "riscv,sv48" => PagingMode::Sv48,
-        "riscv,sv57" => {
-            if want_5lvl_paging {
-                PagingMode::Sv57
-            } else {
-                PagingMode::Sv48
-            }
-        }
+        "riscv,sv57" => PagingMode::Sv57,
         _ => panic!("unknown mmu-type"),
     };
+
+    MAX_PAGING_MODE.store(paging_mode as _, Ordering::Relaxed);
+    paging_mode
+}
+
+/// Initialize a virtual address space with the requested paging mode
+///
+/// # Panics
+///
+/// This function will panic if the initial mappings (identity map and HHDM) cannot be created; or
+/// if `paging_mode` is not supported. Use [`get_max_paging_mode()`] to determine the maximum
+/// supported mode.
+pub fn init(paging_mode: PagingMode) -> AddressSpace {
+    assert!(
+        paging_mode <= get_max_paging_mode(),
+        "unsupported paging mode"
+    );
 
     let mut vmspace = AddressSpace::new(paging_mode);
 
@@ -470,8 +490,6 @@ pub fn init_from_fdt(want_5lvl_paging: bool) -> AddressSpace {
     vmspace
         .map_pages(hhdm_base, 0, pmap_size, MapFlags::RWX | MapFlags::HUGE1G)
         .expect("failed to create higher-half map");
-
-    unsafe { vmspace.switch_to() };
 
     vmspace
 }
