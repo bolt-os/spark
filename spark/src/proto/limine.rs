@@ -487,7 +487,7 @@ pub fn main(mut fs: Box<dyn File>, config: &Entry) -> anyhow::Result<!> {
     let stack_size = if let Some(req) = requests.stack_size {
         let resp = StackSize::new();
         unsafe { req.set_response(leak_hhdm(&vmspace, resp)) };
-        req.stack_size
+        cmp::max(req.stack_size, DEFAULT_STACK_SIZE)
     } else {
         DEFAULT_STACK_SIZE
     };
