@@ -109,8 +109,28 @@ pub use mem::{pmm, vmm};
 
 use crate::config::Value;
 use core::sync::atomic::{AtomicUsize, Ordering};
+#[cfg(uefi)]
+use uefi::prelude::*;
 
+#[cfg(uefi)]
+global_asm!(include_str!("locore-uefi.s"), options(raw));
+#[cfg(sbi)]
 global_asm!(include_str!("locore.s"), options(raw));
+
+#[cfg(uefi)]
+global_asm!(
+    r#"
+    .section .data.sbat
+    sbat:
+        .ascii  "sbat,1,SBAT Version,sbat,1,https://github.com/rhboot/shim/blob/main/SBAT.md\n"
+    "#,
+    concat!(
+        r#".ascii  "spark,1,Spark,spark,"#,
+        env!("CARGO_PKG_VERSION"),
+        r#",https://github.com/bolt-os/spark\n""#,
+    ),
+    "__sbat_endv:",
+);
 
 pub fn hcf() -> ! {
     println!("bruh.");
@@ -123,6 +143,25 @@ static BOOT_HART_ID: AtomicUsize = AtomicUsize::new(0);
 
 static SPARK_CFG_PATHS: &[&str] = &["/boot/spark.cfg", "/spark.cfg"];
 
+#[cfg(uefi)]
+#[no_mangle]
+pub extern "C" fn spark_main(_image: Handle, mut systab: SystemTable<Boot>) -> Status {
+    use core::fmt::Write;
+
+    let stdout = systab.stdout();
+
+    writeln!(stdout, "hello, world!").unwrap();
+
+    let image_base: usize;
+    unsafe {
+        asm!("lla {}, __image_base", out(reg) image_base, options(nomem, nostack));
+    };
+    writeln!(stdout, "loaded to {image_base:#x}").unwrap();
+
+    Status::SUCCESS
+}
+
+#[cfg(sbi)]
 #[allow(clippy::not_unsafe_ptr_arg_deref, clippy::missing_panics_doc)]
 #[no_mangle]
 pub extern "C" fn spark_main(hartid: usize, dtb_ptr: *mut u8) -> ! {

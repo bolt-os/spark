@@ -31,3 +31,6 @@ features = ["bootloader"]
 version = "0.1"
 default-features = false
 features = [ "unwinder", "fde-static", "personality", "panic" ]
+
+[target.'cfg(uefi)'.dependencies]
+uefi = "0.20"

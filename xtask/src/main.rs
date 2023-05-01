@@ -35,6 +35,15 @@ impl FromStr for Target {
     }
 }
 
+impl Target {
+    const fn triple(self) -> &'static str {
+        match self {
+            Target::riscv_sbi => "riscv64gc-unknown-none",
+            Target::riscv_uefi => "riscv64gc-unknown-uefi",
+        }
+    }
+}
+
 #[derive(Clone, Parser)]
 pub struct SparkBuildOptions {
     #[clap(long, default_value = "riscv-sbi")]

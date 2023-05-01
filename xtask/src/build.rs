@@ -41,6 +41,7 @@ pub fn build(ctx: &BuildCtx, options: Options, document: bool) -> anyhow::Result
         let profile_str = if options.release { "release" } else { "dev" };
         let verbose: &[&str] = if options.verbose { &["-vv"] } else { &[] };
         let target_dir = &ctx.target_dir;
+        let rust_target = format!("conf/{}.json", options.target.triple());
 
         let linker_script = format!("conf/{}.ld", options.target);
         let _env_linker_script = ctx.shell.push_env("SPARK_LINKER_SCRIPT", &linker_script);
@@ -66,7 +67,7 @@ pub fn build(ctx: &BuildCtx, options: Options, document: bool) -> anyhow::Result
                 "
                     {cargo_cmd} {cargo_cmd_str}
                         --profile {profile_str}
-                        --target conf/riscv64gc-unknown-none.json
+                        --target {rust_target}
                         --target-dir {target_dir}
                         {verbose...}
                 "
@@ -80,7 +81,7 @@ pub fn build(ctx: &BuildCtx, options: Options, document: bool) -> anyhow::Result
                         --bin spark
                         --document-private-items
                         --profile {profile_str}
-                        --target conf/riscv64gc-unknown-none.json
+                        --target {rust_target}
                         --target-dir {target_dir}
                         {verbose...}
                 "
@@ -91,7 +92,7 @@ pub fn build(ctx: &BuildCtx, options: Options, document: bool) -> anyhow::Result
 
     if !document && !options.clippy {
         let profile = if options.release { "release" } else { "debug" };
-        let target_elf = format!("target/riscv64gc-unknown-none/{profile}/spark",);
+        let target_elf = format!("target/{}/{profile}/spark", options.target.triple());
         let spark_elf = format!(".hdd/spark-{}-{profile}.elf", options.target);
         let spark_bin = format!(".hdd/spark-{}-{profile}.bin", options.target);
 
