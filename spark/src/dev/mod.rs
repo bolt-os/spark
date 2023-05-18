@@ -28,15 +28,21 @@
  * SPDX-License-Identifier: BSD-3-Clause
  */
 
+pub mod acpi;
 pub mod block;
 pub mod fdt;
 pub mod fw_cfg;
 pub mod pcie;
 
 use ::fdt as libfdt;
-
 use core::mem::size_of;
 use libsa::extern_sym;
+#[cfg(uefi)]
+use {
+    core::fmt,
+    spin::Mutex,
+    uefi::{self, proto::Proto, table::BootServices},
+};
 
 pub struct DeviceDriver {
     pub name: &'static str,
@@ -60,6 +66,7 @@ pub fn match_fdt_node(node: &libfdt::node::FdtNode, matches: &[&str]) -> bool {
     }
 }
 
+#[cfg(sbi)]
 pub fn init(fdt: &libfdt::Fdt) {
     log::debug!("scanning device tree");
     for node in fdt.all_nodes() {
@@ -70,5 +77,75 @@ pub fn init(fdt: &libfdt::Fdt) {
                 }
             }
         }
+    }
+}
+
+#[cfg(uefi)]
+struct UefiBlockDevice {
+    proto: Mutex<Proto<uefi::proto::media::block_io::BlockIo>>,
+    media_id: u32,
+    capacity: u64,
+    block_size: u64,
+}
+
+#[cfg(uefi)]
+unsafe impl Send for UefiBlockDevice {}
+#[cfg(uefi)]
+unsafe impl Sync for UefiBlockDevice {}
+
+#[cfg(uefi)]
+impl fmt::Debug for UefiBlockDevice {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("UefiBlockDevice")
+            .field("media_id", &self.media_id)
+            .field("capacity", &self.capacity)
+            .field("block_size", &self.block_size)
+            .finish()
+    }
+}
+
+#[cfg(uefi)]
+impl block::BlockIo for UefiBlockDevice {
+    fn block_size(&self) -> u64 {
+        self.block_size
+    }
+
+    fn capacity(&self) -> u64 {
+        self.capacity
+    }
+
+    fn read_blocks(&self, lba: u64, buf: &mut [u8]) -> crate::io::Result<()> {
+        let mut proto = self.proto.lock();
+        proto.read_blocks(self.media_id, lba, buf)?;
+        Ok(())
+    }
+}
+
+#[cfg(uefi)]
+pub fn init(bs: &BootServices) {
+    use uefi::proto::media::block_io::BlockIo as BlockIoProto;
+
+    acpi::init();
+
+    let handles = bs
+        .handles_by_protocol::<uefi::proto::media::block_io::BlockIo>()
+        .unwrap();
+
+    for handle in &*handles {
+        let proto = bs.protocol_for_handle::<BlockIoProto>(*handle).unwrap();
+        let media = proto.media();
+
+        // Skip partitions.
+        if media.logical_partition {
+            continue;
+        }
+
+        let dev = Box::new(UefiBlockDevice {
+            media_id: media.media_id,
+            capacity: media.last_block + 1,
+            block_size: media.block_size as u64,
+            proto: Mutex::new(proto),
+        });
+        block::register(dev).unwrap();
     }
 }

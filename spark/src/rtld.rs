@@ -204,9 +204,7 @@ impl<'elf, 'a: 'elf> Rtld<'a, 'elf> {
     /// the paging mode that will be used.
     pub fn to_image_ptr(&self, addr: usize) -> usize {
         assert!(self.flags.contains(RtldFlags::IMAGE_LOADED));
-        let x = self.image_base + (addr - self.link_base);
-        log::trace!("{addr:#018x} -> {x:#018x}");
-        x
+        self.image_base + (addr - self.link_base)
     }
 
     pub fn relocation_table(&self) -> Option<&'elf [Rela]> {

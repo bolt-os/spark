@@ -12,8 +12,7 @@ A `.hdd` directory will be created containing the build artifacts.
 
 ## Using the Bootloader
 
-Currently `spark` is limited to reading from NVMe drives. The only protocol currently usable
-is the [`bootelf`](https://bolt-os.github.io/spark-docs/spark/proto/bootelf/index.html) protocol.
+Currently `spark` is limited to reading from NVMe drives.
 
 The easiest way to get up and running is using QEMU's `vvfat` driver to emulate a FAT filesystem
 from a directory on your host:

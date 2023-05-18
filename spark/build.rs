@@ -12,4 +12,11 @@ fn main() {
     println!("cargo:rustc-link-arg-bin=spark=-znostart-stop-gc");
 
     println!("cargo:rerun-if-changed={linker_script}");
+
+    let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap();
+    if target_os == "uefi" {
+        println!("cargo:rustc-cfg=uefi");
+    } else {
+        println!("cargo:rustc-cfg=sbi");
+    }
 }

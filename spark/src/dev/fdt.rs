@@ -27,6 +27,7 @@
  *
  * SPDX-License-Identifier: BSD-3-Clause
  */
+#![cfg(feature = "fdt")]
 
 use crate::BOOT_HART_ID;
 use ::fdt as libfdt;
@@ -61,6 +62,6 @@ pub fn init(dtb_ptr: *mut u8) -> &'static libfdt::Fdt<'static> {
     fdt
 }
 
-pub fn get_fdt() -> &'static libfdt::Fdt<'static> {
-    unsafe { (*FDT.get()).as_ref().unwrap() }
+pub fn get_fdt() -> Option<&'static libfdt::Fdt<'static>> {
+    unsafe { (*FDT.get()).as_ref() }
 }

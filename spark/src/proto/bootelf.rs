@@ -74,7 +74,9 @@ pub fn main(mut fs: Box<dyn File>, config: &Entry) -> anyhow::Result<!> {
     let kernel_data = kernel_file.read_to_end()?;
     let kernel_elf = Elf::new(&kernel_data).unwrap();
     let mut rtld = Rtld::new(&kernel_elf).unwrap();
-    let mut vmspace = vmm::init(vmm::get_max_paging_mode());
+
+    let paging_mode = vmm::get_max_paging_mode();
+    let mut vmspace = vmm::AddressSpace::new(paging_mode, paging_mode.higher_half_start());
 
     rtld.load_image();
     rtld.map_image(&mut vmspace).unwrap();

@@ -201,9 +201,9 @@ _start:
         call            _relocate
         bnez            a0, error
 
-        mv              fp, zero
         mv              a0, s0
         mv              a1, s1
+        mv              fp, zero
         call            spark_main
 
 error:

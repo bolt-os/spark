@@ -30,11 +30,11 @@
 
 use crate::{
     config::{Entry, Value},
-    dev::{self, fdt::DTB_PTR},
+    dev,
     fs::File,
-    pmm,
+    pmm::{self, MAX_PHYS_ADDR},
     rtld::Rtld,
-    size_of,
+    size_of, smp,
     vmm::{self, PagingMode},
     BOOT_HART_ID,
 };
@@ -261,16 +261,16 @@ impl From<PagingMode> for limine::PagingMode {
     }
 }
 
-fn ptr_to_hhdm<T: ?Sized>(vmspace: &vmm::AddressSpace, ptr: *mut T) -> *mut T {
-    ptr.with_addr(vmspace.higher_half_start() + ptr.addr())
+// fn ptr_to_hhdm<T: ?Sized>(vmspace: &vmm::AddressSpace, ptr: *mut T) -> *mut T {
+//     vmspace.direct_map_ptr_mut(ptr)
+// }
+
+fn leak_hhdm_boxed<T: ?Sized>(vmspace: &vmm::AddressSpace, b: Box<T>) -> *mut T {
+    vmspace.direct_map_ptr_mut(Box::leak(b))
 }
 
 fn leak_hhdm<T>(vmspace: &vmm::AddressSpace, val: T) -> *mut T {
-    ptr_to_hhdm(vmspace, Box::leak(Box::new(val)))
-}
-
-fn leak_hhdm_boxed<T: ?Sized>(vmspace: &vmm::AddressSpace, b: Box<T>) -> *mut T {
-    ptr_to_hhdm(vmspace, Box::leak(b))
+    leak_hhdm_boxed(vmspace, Box::new(val))
 }
 
 fn leak_hhdm_vec<T>(vmspace: &vmm::AddressSpace, v: Vec<T>) -> *mut [T] {
@@ -279,7 +279,7 @@ fn leak_hhdm_vec<T>(vmspace: &vmm::AddressSpace, v: Vec<T>) -> *mut [T] {
 
 fn leak_hhdm_cstr(vmspace: &vmm::AddressSpace, s: &str) -> *mut c_char {
     let cstring = Box::leak(CString::new(s).unwrap().into_boxed_c_str());
-    ptr_to_hhdm(vmspace, cstring.as_ptr().cast_mut())
+    vmspace.direct_map_ptr_mut(cstring.as_ptr().cast_mut())
 }
 
 #[allow(clippy::too_many_lines)]
@@ -290,6 +290,9 @@ pub fn main(mut fs: Box<dyn File>, config: &Entry) -> anyhow::Result<!> {
         .kernel_path
         .strip_prefix("boot://")
         .expect("only `boot://` paths are currently supported");
+
+    log::info!("loading kernel: {kernel_path}");
+
     let mut kernel_file = fs.open(kernel_path).expect("failed to open path");
     let kernel_data = kernel_file
         .read_to_end()
@@ -324,7 +327,30 @@ pub fn main(mut fs: Box<dyn File>, config: &Entry) -> anyhow::Result<!> {
         }
     }
 
-    let mut vmspace = vmm::init(paging_mode);
+    let direct_map_base = if config.kaslr {
+        log::warn!("todo: need entropy");
+        paging_mode.higher_half_start()
+    } else {
+        paging_mode.higher_half_start()
+    };
+
+    let mut vmspace = vmm::AddressSpace::new(paging_mode, direct_map_base);
+    let pmap_size = cmp::max(0x100000000, MAX_PHYS_ADDR.load(Ordering::Relaxed) + 1);
+
+    log::info!("initializing {:?} paging.", vmspace.paging_mode());
+
+    vmspace
+        .map_pages(0, 0, pmap_size, vmm::MapFlags::RWX | vmm::MapFlags::HUGE1G)
+        .expect("failed to create identity map");
+    vmspace
+        .map_pages(
+            direct_map_base,
+            0,
+            pmap_size,
+            vmm::MapFlags::RWX | vmm::MapFlags::HUGE1G,
+        )
+        .expect("failed to create higher-half map");
+
     rtld.map_image(&mut vmspace).unwrap();
     rtld.do_relocations();
 
@@ -347,13 +373,14 @@ pub fn main(mut fs: Box<dyn File>, config: &Entry) -> anyhow::Result<!> {
 
     // Direct Map
     if let Some(req) = requests.direct_map {
-        let resp = Hhdm::new(vmspace.higher_half_start());
+        let resp = Hhdm::new(vmspace.direct_map_base());
         unsafe { req.set_response(leak_hhdm(&vmspace, resp)) };
     }
 
     // Device Tree
     if let Some(req) = requests.device_tree {
-        let resp = Dtb::new(ptr_to_hhdm(&vmspace, DTB_PTR.load(Ordering::Relaxed)));
+        let dtb = dev::fdt::DTB_PTR.load(Ordering::Relaxed);
+        let resp = Dtb::new(vmspace.direct_map_ptr_mut(dtb));
         unsafe { req.set_response(leak_hhdm(&vmspace, resp)) };
     }
 
@@ -363,8 +390,12 @@ pub fn main(mut fs: Box<dyn File>, config: &Entry) -> anyhow::Result<!> {
     }
 
     // RSDP
-    if let Some(_req) = requests.rsdp {
-        log::warn!("TODO: RsdpRequest");
+    #[cfg(all(feature = "acpi", uefi))]
+    if let Some(req) = requests.rsdp {
+        if let Some(ptr) = dev::acpi::get_rsdp() {
+            let resp = limine::Rsdp::new(ptr);
+            unsafe { req.set_response(leak_hhdm(&vmspace, resp)) };
+        }
     }
 
     // SMBIOS
@@ -373,8 +404,14 @@ pub fn main(mut fs: Box<dyn File>, config: &Entry) -> anyhow::Result<!> {
     }
 
     // EFI System Table
-    if let Some(_req) = requests.efi_system_table {
-        log::warn!("TODO: EfiSystemTableRequest");
+    #[cfg(uefi)]
+    if let Some(req) = requests.efi_system_table {
+        let addr = uefi::system_table();
+        let resp = limine::EfiSystemTable {
+            revision: 0,
+            addr: addr as *const _ as *mut u8,
+        };
+        unsafe { req.set_response(leak_hhdm(&vmspace, resp)) };
     }
 
     // Modules
@@ -477,7 +514,7 @@ pub fn main(mut fs: Box<dyn File>, config: &Entry) -> anyhow::Result<!> {
     // Boot Time
     let boot_time_response = if let Some(req) = requests.boot_time {
         let phys_leaked = Box::leak(Box::new(BootTime::new(0)));
-        unsafe { req.set_response(ptr_to_hhdm(&vmspace, phys_leaked)) };
+        unsafe { req.set_response(vmspace.direct_map_ptr_mut(phys_leaked)) };
         Some(phys_leaked)
     } else {
         None
@@ -503,17 +540,21 @@ pub fn main(mut fs: Box<dyn File>, config: &Entry) -> anyhow::Result<!> {
     // SMP
     if let Some(req) = requests.smp {
         let bsp_hartid = BOOT_HART_ID.load(Ordering::Relaxed);
-        let fdt = dev::fdt::get_fdt();
 
         let mut cpus = vec![];
-        for cpu in fdt.cpus() {
-            let hartid = cpu.ids().first();
+        for cpu in smp::cpus() {
+            let smp::Cpu {
+                processor_uid,
+                hartid,
+            } = cpu;
+
             if hartid == bsp_hartid {
                 // Skip this hart.
                 continue;
             }
+            println!("smp candidate: hartid {hartid}");
 
-            let info = leak_hhdm(&vmspace, SmpInfo::new(0, hartid));
+            let info = leak_hhdm(&vmspace, SmpInfo::new(processor_uid, hartid));
 
             let stack = vec![0u8; stack_size].into_boxed_slice();
             let stack = Box::into_raw(stack);
@@ -526,7 +567,7 @@ pub fn main(mut fs: Box<dyn File>, config: &Entry) -> anyhow::Result<!> {
                     .write(ApPayload {
                         satp: vmspace.satp(),
                         gp: global_ptr,
-                        sp: vmspace.higher_half_start() + stack.addr() + stack_size,
+                        sp: vmspace.direct_map_base() + stack.addr() + stack_size,
                         smp_info: info,
                     });
             };
@@ -560,13 +601,17 @@ pub fn main(mut fs: Box<dyn File>, config: &Entry) -> anyhow::Result<!> {
     drop(fs);
 
     // Memory Map
+    println!("memor");
     if let Some(req) = requests.memory_map {
-        let (entries, len) = pmm::generate_limine_memory_map(&mut vmspace);
+        let mut response = Box::<MemoryMap>::new_uninit();
+        let memory_map = pmm::generate_limine_memory_map(&mut vmspace);
+        println!("MEMOERY");
         unsafe {
-            let resp = MemoryMap::new(entries, len);
-            req.set_response(leak_hhdm(&vmspace, resp));
+            response.as_mut_ptr().write(memory_map);
+            req.set_response(leak_hhdm_boxed(&vmspace, response.assume_init()));
         }
     }
+    println!("done");
 
     // ===================================================
     //      NO MEMORY ALLOCATION AFTER THIS POINT !!!
@@ -678,4 +723,94 @@ unsafe extern "C" fn ap_spinup() -> ! {
         ap_smp_info = const offset_of!(ApPayload, smp_info),
         options(noreturn)
     );
+}
+
+#[cfg(notyet)]
+fn create_memory_map_and_exit_boot_services(vmspace: &vmm::AddressSpace) -> MemoryMap {
+    //     pmm::exit_boot_services(|descriptor| {
+    //
+    //     });
+
+    let boot_services = uefi::system_table().boot_services();
+    let mut tries = 5;
+
+    loop {
+        let mut memory_map_size = 0;
+        let mut map_key = 0;
+        let mut descriptor_size = 0;
+        let mut descriptor_version = 0;
+
+        match (boot_services.get_memory_map)(
+            &mut memory_map_size,
+            ptr::null_mut(),
+            &mut map_key,
+            &mut descriptor_size,
+            &mut descriptor_version,
+        ) {
+            Status::BUFFER_TOO_SMALL => {}
+            status => status.to_result(()).unwrap(),
+        }
+
+        let num_entries = memory_map_size / descriptor_size;
+
+        let limine_entries = Box::leak(Box::new_uninit_slice(num_entries));
+        let limine_ptrs = Box::leak(Box::new_uninit_slice(num_entries));
+        let buffer = Box::leak(Box::<[u8]>::new_uninit_slice(memory_map_size));
+
+        (boot_services.get_memory_map)(
+            &mut memory_map_size,
+            buffer.as_mut_ptr().cast(),
+            &mut map_key,
+            &mut descriptor_size,
+            &mut descriptor_version,
+        )
+        .to_result(())
+        .unwrap();
+
+        if let Err(status) =
+            (boot_services.exit_boot_services)(uefi::image_handle(), map_key).to_result(())
+        {
+            if tries > 0 {
+                tries -= 1;
+                continue;
+            }
+            panic!("failed to exit boot services: {status:?}");
+        }
+
+        let buffer = unsafe { MaybeUninit::slice_assume_init_ref(buffer) };
+        let mut offset = 0;
+        let mut len = 0;
+        loop {
+            if offset + descriptor_size >= memory_map_size {
+                break;
+            }
+
+            let uefi_entry = unsafe {
+                &*buffer[offset..][..descriptor_size]
+                    .as_ptr()
+                    .cast::<MemoryDescriptor>()
+            };
+            let limine_entry = MemoryMapEntry::new(
+                uefi_entry.phys as usize,
+                uefi_entry.num_pages as usize * PAGE_SIZE,
+                uefi_entry.kind.into(),
+            );
+
+            unsafe {
+                let ptr = limine_entries.as_mut_ptr().add(len);
+                ptr.write(MaybeUninit::new(limine_entry));
+                limine_ptrs.as_mut_ptr().add(len).write(MaybeUninit::new(
+                    vmspace.direct_map_ptr_mut(ptr.cast::<MemoryMapEntry>()),
+                ));
+            }
+
+            len += 1;
+            offset += descriptor_size;
+        }
+
+        unsafe {
+            let ptr = MaybeUninit::slice_assume_init_mut(limine_ptrs).as_mut_ptr();
+            return MemoryMap::new(ptr, len);
+        }
+    }
 }

@@ -28,12 +28,47 @@
  * SPDX-License-Identifier: BSD-3-Clause
  */
 
-use core::{alloc::GlobalAlloc, cmp::Ordering, ptr};
+use core::{alloc::GlobalAlloc, ptr};
+#[cfg(sbi)]
+use {
+    crate::{pages_for, pmm, vmm::PAGE_SIZE},
+    core::cmp::Ordering,
+};
 
-use crate::{pages_for, pmm, vmm::PAGE_SIZE};
+#[cfg(uefi)]
+struct BootServicesAllocator;
 
+#[cfg(uefi)]
+unsafe impl GlobalAlloc for BootServicesAllocator {
+    unsafe fn alloc(&self, layout: core::alloc::Layout) -> *mut u8 {
+        use uefi::table::MemoryType;
+        let bs = uefi::boot_services();
+        match bs.allocate_pool(MemoryType::LOADER_DATA, layout.size()) {
+            Ok(ptr) => ptr,
+            Err(err) => {
+                log::error!("{err:?}");
+                ptr::null_mut()
+            }
+        }
+    }
+
+    unsafe fn dealloc(&self, ptr: *mut u8, _layout: core::alloc::Layout) {
+        let bs = uefi::boot_services();
+        if let Err(err) = bs.free_pool(ptr) {
+            log::error!("{err:?}");
+            panic!();
+        }
+    }
+}
+
+#[cfg(uefi)]
+#[global_allocator]
+static MALLOC: BootServicesAllocator = BootServicesAllocator;
+
+#[cfg(sbi)]
 struct BadButGoodEnoughAllocator;
 
+#[cfg(sbi)]
 unsafe impl GlobalAlloc for BadButGoodEnoughAllocator {
     unsafe fn alloc(&self, layout: core::alloc::Layout) -> *mut u8 {
         assert!(layout.align() <= PAGE_SIZE);
@@ -79,5 +114,6 @@ unsafe impl GlobalAlloc for BadButGoodEnoughAllocator {
     }
 }
 
+#[cfg(sbi)]
 #[global_allocator]
 static MALLOC: BadButGoodEnoughAllocator = BadButGoodEnoughAllocator;

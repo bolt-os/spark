@@ -88,7 +88,7 @@ pub fn init() {
 pub type Result<T> = core::result::Result<T, Error>;
 
 #[allow(clippy::enum_variant_names)]
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Error {
     DeviceError,
     InvalidArgument,
@@ -111,5 +111,20 @@ impl core::fmt::Display for Error {
 impl From<Error> for anyhow::Error {
     fn from(value: Error) -> Self {
         anyhow::anyhow!("{value}")
+    }
+}
+
+#[cfg(uefi)]
+impl From<uefi::Status> for Error {
+    fn from(value: uefi::Status) -> Self {
+        use uefi::Status;
+        match value {
+            Status::DEVICE_ERROR => Self::DeviceError,
+            Status::TIMEOUT => Self::TimedOut,
+            _ => {
+                log::error!("uefi->io: {value:?}");
+                Self::Other
+            }
+        }
     }
 }

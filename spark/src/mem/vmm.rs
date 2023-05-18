@@ -28,7 +28,12 @@
  * SPDX-License-Identifier: BSD-3-Clause
  */
 
-use crate::{dev::fdt, pages_for, pmm, pmm::MAX_PHYS_ADDR, BOOT_HART_ID};
+use crate::{
+    dev::fdt,
+    pages_for,
+    pmm::{self},
+    BOOT_HART_ID,
+};
 use alloc::collections::LinkedList;
 use core::{
     cmp, ptr,
@@ -49,11 +54,11 @@ pub enum PagingMode {
 
 impl PagingMode {
     pub const fn levels(self) -> usize {
-        match self {
-            PagingMode::Sv39 => 3,
-            PagingMode::Sv48 => 4,
-            PagingMode::Sv57 => 5,
-        }
+        self as usize - 5
+    }
+
+    pub const fn max_level(self) -> usize {
+        self.levels() - 1
     }
 
     pub const fn higher_half_start(self) -> usize {
@@ -62,6 +67,12 @@ impl PagingMode {
             PagingMode::Sv48 => 0xffff800000000000,
             PagingMode::Sv57 => 0xff00000000000000,
         }
+    }
+
+    pub fn max_page_size(self) -> usize {
+        static PAGE_SIZES: [usize; 5] =
+            [0x1000, 0x200000, 0x40000000, 0x8000000000, 0x1000000000000];
+        PAGE_SIZES[self.max_level()]
     }
 }
 
@@ -92,6 +103,7 @@ pub struct AddressSpace {
     asid: u16,
     #[allow(clippy::linkedlist)]
     maps: LinkedList<Mapping>,
+    direct_map_base: usize,
 }
 
 /// Allocate a new page table
@@ -142,12 +154,13 @@ impl Default for MemoryType {
 
 impl AddressSpace {
     /// Create a new, empty, virtual address space
-    pub const fn new(paging_mode: PagingMode) -> AddressSpace {
+    pub const fn new(paging_mode: PagingMode, direct_map_base: usize) -> AddressSpace {
         Self {
             root: 0,
             mode: paging_mode,
             asid: 0,
             maps: LinkedList::new(),
+            direct_map_base,
         }
     }
 
@@ -172,6 +185,18 @@ impl AddressSpace {
     pub unsafe fn switch_to(&self) {
         #[cfg(target_arch = "riscv64")]
         asm!("csrw satp, {}", in(reg) self.satp(), options(nostack, preserves_flags));
+    }
+
+    pub const fn direct_map_base(&self) -> usize {
+        self.direct_map_base
+    }
+
+    pub fn direct_map_ptr<T: ?Sized>(&self, ptr: *const T) -> *const T {
+        ptr.with_addr(self.direct_map_base + ptr.addr())
+    }
+
+    pub fn direct_map_ptr_mut<T: ?Sized>(&self, ptr: *mut T) -> *mut T {
+        ptr.with_addr(self.direct_map_base + ptr.addr())
     }
 
     pub fn higher_half_start(&self) -> usize {
@@ -423,23 +448,15 @@ impl PageTableEntry {
     }
 }
 
-/// Determine the maximum supported paging mode as reported by the Device Tree
+/// Get the system's maximum paging mode from the device tree.
 ///
 /// # Panics
 ///
-/// This function may panic if the required information is not available.
-pub fn get_max_paging_mode() -> PagingMode {
+/// This function may panic if the device tree does not contain a node for the BSP or if
+/// the node does not contain an `mmu-type` property.
+fn get_max_paging_mode_fdt(fdt: &::fdt::Fdt) -> PagingMode {
     use ::fdt::node::NodeProperty;
 
-    static MAX_PAGING_MODE: AtomicUsize = AtomicUsize::new(!0);
-
-    let paging_mode = MAX_PAGING_MODE.load(Ordering::Relaxed);
-    if paging_mode != !0 {
-        // SAFETY: The value is only ever changed from !0 to a valid discriminant.
-        return unsafe { core::mem::transmute(paging_mode) };
-    }
-
-    let fdt = fdt::get_fdt();
     let hartid = BOOT_HART_ID.load(Ordering::Relaxed);
 
     /*
@@ -460,36 +477,102 @@ pub fn get_max_paging_mode() -> PagingMode {
         _ => panic!("unknown mmu-type"),
     };
 
-    MAX_PAGING_MODE.store(paging_mode as _, Ordering::Relaxed);
     paging_mode
 }
 
-/// Initialize a virtual address space with the requested paging mode
-///
-/// # Panics
-///
-/// This function will panic if the initial mappings (identity map and HHDM) cannot be created; or
-/// if `paging_mode` is not supported. Use [`get_max_paging_mode()`] to determine the maximum
-/// supported mode.
-pub fn init(paging_mode: PagingMode) -> AddressSpace {
-    assert!(
-        paging_mode <= get_max_paging_mode(),
-        "unsupported paging mode"
-    );
+/// Determine the system's maximum paging mode by trial-and-error
+fn detect_max_paging_mode() -> PagingMode {
+    // Writes to `satp` with an invalid MODE field have no effect.
+    // We can determine the maximum paging mode by trying to
+    // enable each mode, starting with the maximum we support (Sv57) and
+    // working our way down until we are successful.
+    let mut table = PageTable {
+        entries: [PageTableEntry(0); 512],
+    };
+    let mut paging_mode = PagingMode::Sv57;
+    loop {
+        // We must guarantee that at least this code will be identity-mapped if and when
+        // we are successful. Mapping the entire lower-half hopefully does this for us.
+        //
+        // XXX: Theoretically a system could exist with RAM so high up that we cannot
+        // identity-map it into the Sv39 address space and theoretically we could be
+        // running there. Too bad, so sad.
+        let mut addr = 0;
+        for entry in &mut table.entries[..256] {
+            *entry = PageTableEntry((addr >> 2) | 0xf);
+            addr += paging_mode.max_page_size();
+        }
 
-    let mut vmspace = AddressSpace::new(paging_mode);
+        let satp = (paging_mode as usize) << 60 | (table.entries.as_ptr().addr() >> 12);
+        let new: usize;
+        unsafe {
+            asm!(
+                "csrw satp, {0}",
+                "csrr {0}, satp",
+                "csrw satp, zero",
+                inout(reg) satp => new,
+                options(nostack),
+            );
+        }
 
-    let pmap_size = cmp::max(0x100000000, MAX_PHYS_ADDR.load(Ordering::Relaxed) + 1);
-    let hhdm_base = vmspace.paging_mode().higher_half_start();
+        if new == satp {
+            break paging_mode;
+        }
 
-    log::info!("initializing {:?} paging.", vmspace.paging_mode());
-
-    vmspace
-        .map_pages(0, 0, pmap_size, MapFlags::RWX | MapFlags::HUGE1G)
-        .expect("failed to create identity map");
-    vmspace
-        .map_pages(hhdm_base, 0, pmap_size, MapFlags::RWX | MapFlags::HUGE1G)
-        .expect("failed to create higher-half map");
-
-    vmspace
+        match paging_mode {
+            PagingMode::Sv57 => paging_mode = PagingMode::Sv48,
+            PagingMode::Sv48 => paging_mode = PagingMode::Sv39,
+            PagingMode::Sv39 => panic!("paging is not supported"),
+        }
+    }
 }
+
+/// Returns the maximum paging mode supported by the system
+pub fn get_max_paging_mode() -> PagingMode {
+    static MAX_PAGING_MODE: AtomicUsize = AtomicUsize::new(!0);
+    let mode = MAX_PAGING_MODE.load(Ordering::Relaxed);
+    if mode != !0 {
+        // SAFETY: The value is only ever changed from !0 to a valid discriminant.
+        return unsafe { core::mem::transmute(mode) };
+    }
+
+    #[cfg(feature = "fdt")]
+    if let Some(fdt) = fdt::get_fdt() {
+        let mode = get_max_paging_mode_fdt(fdt);
+        MAX_PAGING_MODE.store(mode as _, Ordering::Relaxed);
+        return mode;
+    }
+
+    let mode = detect_max_paging_mode();
+    MAX_PAGING_MODE.store(mode as _, Ordering::Relaxed);
+    mode
+}
+//
+// /// Initialize a virtual address space with the requested paging mode
+// ///
+// /// # Panics
+// ///
+// /// This function will panic if the initial mappings (identity map and HHDM) cannot be created; or
+// /// if `paging_mode` is not supported. Use [`get_max_paging_mode()`] to determine the maximum
+// /// supported mode.
+// pub fn init(paging_mode: PagingMode, direct_map_base: usize) -> AddressSpace {
+//     assert!(
+//         paging_mode <= get_max_paging_mode(),
+//         "unsupported paging mode"
+//     );
+//
+//     let mut vmspace = AddressSpace::new(paging_mode, direct_map_base);
+//
+//     let pmap_size = cmp::max(0x100000000, MAX_PHYS_ADDR.load(Ordering::Relaxed) + 1);
+//
+//     log::info!("initializing {:?} paging.", vmspace.paging_mode());
+//
+//     vmspace
+//         .map_pages(0, 0, pmap_size, MapFlags::RWX | MapFlags::HUGE1G)
+//         .expect("failed to create identity map");
+//     vmspace
+//         .map_pages(direct_map_base, 0, pmap_size, MapFlags::RWX | MapFlags::HUGE1G)
+//         .expect("failed to create higher-half map");
+//
+//     vmspace
+// }

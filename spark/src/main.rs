@@ -38,6 +38,7 @@
     asm_const,                          // https://github.com/rust-lang/rust/issues/93332
     get_mut_unchecked,                  // https://github.com/rust-lang/rust/issues/63292
     let_chains,                         // https://github.com/rust-lang/rust/issues/53667
+    maybe_uninit_slice,                 // https://github.com/rust-lang/rust/issues/63569
     naked_functions,                    // https://github.com/rust-lang/rust/issues/32408
     never_type,                         // https://github.com/rust-lang/rust/issues/35121
     new_uninit,                         // https://github.com/rust-lang/rust/issues/63291
@@ -100,6 +101,7 @@ mod mem;
 mod panic;
 mod proto;
 mod rtld;
+mod smp;
 mod test;
 mod time;
 mod trap;
@@ -107,10 +109,10 @@ mod trap;
 pub use anyhow::Result;
 pub use mem::{pmm, vmm};
 
-use crate::config::Value;
+use config::Value;
 use core::sync::atomic::{AtomicUsize, Ordering};
 #[cfg(uefi)]
-use uefi::prelude::*;
+use uefi::{proto::riscv::RiscvBoot, table::SystemTable, Handle};
 
 #[cfg(uefi)]
 global_asm!(include_str!("locore-uefi.s"), options(raw));
@@ -141,24 +143,35 @@ pub fn hcf() -> ! {
 
 static BOOT_HART_ID: AtomicUsize = AtomicUsize::new(0);
 
-static SPARK_CFG_PATHS: &[&str] = &["/boot/spark.cfg", "/spark.cfg"];
-
 #[cfg(uefi)]
 #[no_mangle]
-pub extern "C" fn spark_main(_image: Handle, mut systab: SystemTable<Boot>) -> Status {
-    use core::fmt::Write;
+#[allow(clippy::missing_panics_doc)]
+pub extern "C" fn spark_main(image: Handle, system_table: &'static SystemTable) -> ! {
+    unsafe { uefi::bootstrap(image, system_table) };
 
-    let stdout = systab.stdout();
+    io::init();
 
-    writeln!(stdout, "hello, world!").unwrap();
-
+    // Print the address we've been loaded to for easier debugging.
     let image_base: usize;
     unsafe {
         asm!("lla {}, __image_base", out(reg) image_base, options(nomem, nostack));
-    };
-    writeln!(stdout, "loaded to {image_base:#x}").unwrap();
+    }
+    log::debug!("image base: {image_base:#x}");
 
-    Status::SUCCESS
+    let boot_services = uefi::boot_services();
+
+    let mut riscv_boot_proto = boot_services
+        .first_protocol::<RiscvBoot>()
+        .expect("risc-v boot protocol is not available");
+
+    let hartid = riscv_boot_proto
+        .get_boot_hartid()
+        .expect("failed to get bsp's hart id");
+    BOOT_HART_ID.store(hartid, Ordering::Relaxed);
+
+    dev::init(boot_services);
+
+    main();
 }
 
 #[cfg(sbi)]
@@ -184,6 +197,12 @@ pub extern "C" fn spark_main(hartid: usize, dtb_ptr: *mut u8) -> ! {
     // Probe the full device tree before we search for a boot partition
     dev::init(fdt);
 
+    main();
+}
+
+static SPARK_CFG_PATHS: &[&str] = &["/boot/spark.cfg", "/spark.cfg"];
+
+fn main() -> ! {
     // Search each volume on each disk for the config file.
     let mut config_file = 'b: {
         for disk in dev::block::DISKS.read().iter() {
