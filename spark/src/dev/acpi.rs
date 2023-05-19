@@ -1,7 +1,5 @@
 #![cfg(all(feature = "acpi", uefi))]
 
-use uefi::table::TableGuid;
-
 static mut RSDP: Option<*mut u8> = None;
 static mut ROOT: Option<::acpi::RootTable<Bridge>> = None;
 
@@ -20,17 +18,10 @@ impl ::acpi::Bridge for Bridge {
     fn unmap(&self, _virt: usize) {}
 }
 
-pub fn init() {
-    let config_table = uefi::system_table().config_table();
-    let Some(root_ptr) = config_table
-        .get_table(TableGuid::ACPI_20)
-        .or_else(|| config_table.get_table(TableGuid::ACPI))
-        else { return };
-
+pub fn init(rsdp: *mut u8) {
     unsafe {
-        let ptr = root_ptr.cast();
-        RSDP = Some(ptr);
-        ROOT = Some(::acpi::RootTable::new(ptr, Bridge));
+        RSDP = Some(rsdp);
+        ROOT = Some(::acpi::RootTable::new(rsdp, Bridge));
     }
 }
 
@@ -39,6 +30,6 @@ pub fn get_rsdp() -> Option<*mut u8> {
 }
 
 pub fn get_table<T: ::acpi::Sdt>() -> Option<*const T> {
-    let root = unsafe { ROOT.as_ref().unwrap() };
+    let root = unsafe { ROOT.as_ref()? };
     root.get_table::<T>()
 }

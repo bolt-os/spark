@@ -112,7 +112,11 @@ pub use mem::{pmm, vmm};
 use config::Value;
 use core::sync::atomic::{AtomicUsize, Ordering};
 #[cfg(uefi)]
-use uefi::{proto::riscv::RiscvBoot, table::SystemTable, Handle};
+use uefi::{
+    proto::riscv::RiscvBoot,
+    table::{SystemTable, TableGuid},
+    Handle,
+};
 
 #[cfg(uefi)]
 global_asm!(include_str!("locore-uefi.s"), options(raw));
@@ -169,7 +173,19 @@ pub extern "C" fn spark_main(image: Handle, system_table: &'static SystemTable) 
         .expect("failed to get bsp's hart id");
     BOOT_HART_ID.store(hartid, Ordering::Relaxed);
 
-    dev::init(boot_services);
+    let config_table = system_table.config_table();
+
+    if let Some(ptr) = config_table.get_table(TableGuid::ACPI_20) {
+        dev::acpi::init(ptr.cast());
+    } else if let Some(ptr) = config_table.get_table(TableGuid::ACPI) {
+        dev::acpi::init(ptr.cast());
+    }
+
+    if let Some(ptr) = config_table.get_table(TableGuid::DEVICE_TREE) {
+        dev::fdt::init(ptr.cast());
+    }
+
+    dev::init();
 
     main();
 }
@@ -195,7 +211,7 @@ pub extern "C" fn spark_main(hartid: usize, dtb_ptr: *mut u8) -> ! {
     // TODO: Probe console devices
 
     // Probe the full device tree before we search for a boot partition
-    dev::init(fdt);
+    dev::init();
 
     main();
 }
