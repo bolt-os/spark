@@ -24,7 +24,7 @@ uuid = { version = "1.0", default-features = false }
 
 [dependencies.limine]
 git = "https://github.com/bolt-os/limine-rs"
-rev = "658a9d9"
+rev = "722eef0"
 features = ["bootloader"]
 
 [dependencies.unwinding]

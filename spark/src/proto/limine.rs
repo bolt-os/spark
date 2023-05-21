@@ -236,12 +236,6 @@ fn get_request_pointers(rtld: &Rtld, requests: &mut Requests) {
     }
 }
 
-const _: () = {
-    assert!(limine::PagingMode::Sv39 as u8 == PagingMode::Sv39 as u8);
-    assert!(limine::PagingMode::Sv48 as u8 == PagingMode::Sv48 as u8);
-    assert!(limine::PagingMode::Sv57 as u8 == PagingMode::Sv57 as u8);
-};
-
 impl From<limine::PagingMode> for PagingMode {
     fn from(value: limine::PagingMode) -> Self {
         match value {
