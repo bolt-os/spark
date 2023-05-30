@@ -147,7 +147,7 @@ dependencies = [
 [[package]]
 name = "uefi"
 version = "0.1.0"
-source = "git+https://github.com/bolt-os/uefi?rev=c654789#c6547897aba975fc19709077ceb449143e33ea1a"
+source = "git+https://github.com/bolt-os/uefi?rev=aa56bfd#aa56bfdfe4f931306da7edac3c9fb97ef6e87e58"
 dependencies = [
  "bitflags",
  "limine",

@@ -264,13 +264,16 @@ fn main() -> ! {
     };
 
     match protocol {
+        #[cfg(feature = "proto-bootelf")]
         "bootelf" => proto::bootelf::main(config_file, boot_entry).unwrap(),
+        #[cfg(feature = "proto-limine")]
         "limine" => proto::limine::main(config_file, boot_entry).unwrap(),
         _ => panic!("protocol `{protocol}` is not supported"),
     }
 }
 
 #[allow(dead_code)]
+#[cfg(feature = "fdt")]
 fn print_fdt(fdt: &fdt::Fdt) {
     fn print_fdt_node(node: &fdt::node::FdtNode, depth: &mut usize) {
         (0..*depth).for_each(|_| print!("    "));

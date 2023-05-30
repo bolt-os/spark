@@ -36,7 +36,7 @@ use crate::{
 };
 use alloc::collections::LinkedList;
 use core::{
-    cmp, ptr,
+    ptr,
     sync::atomic::{AtomicUsize, Ordering},
 };
 

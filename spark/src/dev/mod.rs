@@ -34,22 +34,20 @@ pub mod fdt;
 pub mod fw_cfg;
 pub mod pcie;
 
-use ::fdt as libfdt;
-use core::mem::size_of;
-use libsa::extern_sym;
+#[cfg(sbi)]
+use {::fdt as libfdt, core::mem::size_of, libsa::extern_sym};
 #[cfg(uefi)]
-use {
-    core::fmt,
-    spin::Mutex,
-    uefi::proto::Proto,
-};
+use {core::fmt, spin::Mutex, uefi::proto::Proto};
 
+#[cfg(sbi)]
 pub struct DeviceDriver {
     pub name: &'static str,
+    #[cfg(all(sbi, feature = "dev-pcie"))]
     pub probe_pci: Option<fn(&pcie::Device) -> crate::Result<()>>,
     pub probe_fdt: Option<fn(&libfdt::node::FdtNode) -> crate::Result<()>>,
 }
 
+#[cfg(sbi)]
 pub fn device_drivers() -> &'static [DeviceDriver] {
     let drivers_start = extern_sym!(__start_device_drivers as DeviceDriver);
     let drivers_end = extern_sym!(__stop_device_drivers as DeviceDriver);
@@ -58,6 +56,7 @@ pub fn device_drivers() -> &'static [DeviceDriver] {
     unsafe { core::slice::from_raw_parts(drivers_start, len) }
 }
 
+#[cfg(sbi)]
 pub fn match_fdt_node(node: &libfdt::node::FdtNode, matches: &[&str]) -> bool {
     if let Some(compat) = node.compatible() {
         compat.all().any(|c| matches.contains(&c))

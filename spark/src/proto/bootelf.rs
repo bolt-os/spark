@@ -28,6 +28,8 @@
  * SPDX-License-Identifier: BSD-3-Clause
  */
 
+#![cfg(feature = "proto-bootelf")]
+
 //! `bootelf` protocol
 //!
 //! The `bootelf` protocol is a very simple boot protocol for ELF kernels.

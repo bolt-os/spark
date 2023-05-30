@@ -28,6 +28,8 @@
  * SPDX-License-Identifier: BSD-3-Clause
  */
 
+#![cfg(feature = "dev-fw_cfg")]
+
 use self::mmio::{DmaPacket, MmioWindow};
 use core::{cell::OnceCell, fmt, ptr::addr_of};
 use libsa::{

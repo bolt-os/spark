@@ -1,4 +1,4 @@
-#![cfg(all(feature = "acpi", uefi))]
+#![cfg(feature = "acpi")]
 
 static mut RSDP: Option<*mut u8> = None;
 static mut ROOT: Option<::acpi::RootTable<Bridge>> = None;

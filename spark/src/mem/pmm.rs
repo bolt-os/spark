@@ -29,8 +29,6 @@
  */
 
 use crate::vmm::PAGE_SIZE;
-#[cfg(uefi)]
-use core::ptr;
 use core::sync::atomic::{AtomicUsize, Ordering};
 #[cfg(sbi)]
 use {
@@ -462,7 +460,7 @@ pub unsafe fn free_frames(base: usize, num_frames: usize) {
 ///
 /// This function may panic if it fails to allocate memory for the map or fails to exit
 /// boot services.
-#[cfg(uefi)]
+#[cfg(all(uefi, feature = "proto-limine"))]
 pub fn generate_limine_memory_map(vmspace: &mut super::vmm::AddressSpace) -> limine::MemoryMap {
     use core::mem::MaybeUninit;
     use uefi::table::MemoryDescriptor;

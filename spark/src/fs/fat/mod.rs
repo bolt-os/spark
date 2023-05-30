@@ -28,6 +28,8 @@
  * SPDX-License-Identifier: BSD-3-Clause
  */
 
+#![cfg(feature = "fs-fat")]
+
 mod bpb;
 mod dir;
 

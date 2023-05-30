@@ -28,6 +28,7 @@
  * SPDX-License-Identifier: BSD-3-Clause
  */
 
+#![cfg(all(sbi, feature = "dev-pcie"))]
 #![allow(clippy::cast_possible_truncation)]
 
 use super::device_drivers;
@@ -714,6 +715,7 @@ fn fdt_get_bus_range(node: &fdt::node::FdtNode) -> RangeInclusive<u8> {
 static PCIE_DRIVER: super::DeviceDriver = super::DeviceDriver {
     name: "pcie",
     probe_fdt: Some(fdt_init),
+    #[cfg(feature = "dev-pcie")]
     probe_pci: None,
 };
 

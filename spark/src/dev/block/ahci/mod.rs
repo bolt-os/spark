@@ -1,3 +1,5 @@
+#![cfg(feature = "dev-ahci")]
+
 use crate::{
     dev::{pcie::Device, DeviceDriver},
     io,

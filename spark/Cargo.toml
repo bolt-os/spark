@@ -13,9 +13,28 @@ repository = "https://github.com/bolt-os/spark"
 default = [
     "acpi",
     "fdt",
+
+    # "dev-fw_cfg",
+    "dev-nvme",
+    "dev-pcie",
+
+    "fs-fat",
+
+    "proto-limine",
 ]
+
 acpi = ["dep:acpi"]
 fdt = ["dep:fdt"]
+
+dev-ahci = ["dev-pcie"]
+dev-fw_cfg = []
+dev-nvme = ["dev-pcie"]
+dev-pcie = []
+
+fs-fat = []
+
+proto-bootelf = []
+proto-limine = ["limine"]
 
 [dependencies]
 acpi = { git = "https://github.com/bolt-os/acpi", rev = "8b1520a", optional = true }
@@ -35,6 +54,7 @@ uuid = { version = "1.0", default-features = false }
 git = "https://github.com/bolt-os/limine-rs"
 rev = "722eef0"
 features = ["bootloader"]
+optional = true
 
 [dependencies.unwinding]
 version = "0.1"
@@ -42,4 +62,4 @@ default-features = false
 features = [ "unwinder", "fde-static", "personality", "panic" ]
 
 [target.'cfg(uefi)'.dependencies]
-uefi = { git = "https://github.com/bolt-os/uefi", rev = "c654789", features = ["limine"] }
+uefi = { git = "https://github.com/bolt-os/uefi", rev = "aa56bfd", features = ["limine"] }

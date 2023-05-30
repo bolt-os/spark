@@ -28,6 +28,8 @@
  * SPDX-License-Identifier: BSD-3-Clause
  */
 
+#![cfg(all(sbi, feature = "dev-nvme"))]
+
 //! NVM Express
 
 use crate::{
@@ -58,6 +60,7 @@ use self::{
 static NVME_DRIVER: DeviceDriver = DeviceDriver {
     name: "nvme",
     probe_fdt: None,
+    #[cfg(feature = "dev-pcie")]
     probe_pci: Some(pci_init),
 };
 
