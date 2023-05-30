@@ -63,7 +63,7 @@ source = "git+https://github.com/bolt-os/libsa#b5f0a9af7e6cd1426418b7e5f9678f97b
 [[package]]
 name = "limine"
 version = "0.1.0"
-source = "git+https://github.com/bolt-os/limine-rs?rev=c84a9fc#c84a9fc4ce8f053696f8a3fcbbd36183ad1d4086"
+source = "git+https://github.com/bolt-os/limine-rs?rev=722eef0#722eef07f551ce600be18ff21926f31975810ebf"
 dependencies = [
  "bitflags",
 ]
