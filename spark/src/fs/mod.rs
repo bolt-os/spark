@@ -51,6 +51,7 @@ pub trait File: Send {
     fn size(&mut self) -> u64;
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize>;
     fn position(&mut self) -> u64;
+    fn volume(&self) -> &Arc<Volume>;
 
     fn read_to_end(&mut self) -> io::Result<Vec<u8>> {
         let size = (self.size() - self.position()) as usize;

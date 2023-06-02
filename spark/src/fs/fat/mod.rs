@@ -337,6 +337,10 @@ impl File for OpenFile {
         self.offset
     }
 
+    fn volume(&self) -> &Arc<Volume> {
+        &self.fs.volume
+    }
+
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         let block_size = self.fs.volume.block_size();
         let mut count = buf.len() as u64;
