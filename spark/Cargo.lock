@@ -69,6 +69,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "limine"
+version = "0.1.0"
+source = "git+https://github.com/bolt-os/limine-rs?rev=85f7db3#85f7db3f7835991977efd07913317c0877bb9e1a"
+dependencies = [
+ "bitflags",
+ "uuid",
+]
+
+[[package]]
 name = "lock_api"
 version = "0.4.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -124,7 +133,7 @@ dependencies = [
  "bolt-libelf",
  "fdt",
  "libsa",
- "limine",
+ "limine 0.1.0 (git+https://github.com/bolt-os/limine-rs?rev=85f7db3)",
  "log",
  "memoffset",
  "rustc-demangle",
@@ -150,7 +159,7 @@ version = "0.1.0"
 source = "git+https://github.com/bolt-os/uefi?rev=aa56bfd#aa56bfdfe4f931306da7edac3c9fb97ef6e87e58"
 dependencies = [
  "bitflags",
- "limine",
+ "limine 0.1.0 (git+https://github.com/bolt-os/limine-rs?rev=722eef0)",
 ]
 
 [[package]]
