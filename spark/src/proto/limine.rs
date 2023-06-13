@@ -374,8 +374,10 @@ pub fn main(mut fs: Box<dyn File>, config: &Entry) -> anyhow::Result<!> {
     // Device Tree
     if let Some(req) = requests.device_tree {
         let dtb = dev::fdt::DTB_PTR.load(Ordering::Relaxed);
-        let resp = Dtb::new(vmspace.direct_map_ptr_mut(dtb));
-        unsafe { req.set_response(leak_hhdm(&vmspace, resp)) };
+        if !dtb.is_null() {
+            let resp = Dtb::new(vmspace.direct_map_ptr_mut(dtb));
+            unsafe { req.set_response(leak_hhdm(&vmspace, resp)) };
+        }
     }
 
     // Framebuffer
