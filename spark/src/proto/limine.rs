@@ -523,14 +523,6 @@ pub fn main(mut fs: Box<dyn File>, config: &Entry) -> anyhow::Result<!> {
         DEFAULT_STACK_SIZE
     };
 
-    // fn get_global_ptr(elf: &Elf) -> Option<usize> {
-    //     let symbol_table = elf.symbol_table()?;
-    //     let symbol = symbol_table.find(|sym| sym.name() == Some("__global_pointer$"))?;
-    //     Some(symbol.value() as usize)
-    // }
-    // let global_ptr = get_global_ptr(&kernel_elf).unwrap_or_default();
-    let global_ptr = 0;
-
     // SMP
     if let Some(req) = requests.smp {
         let bsp_hartid = BOOT_HART_ID.load(Ordering::Relaxed);
@@ -560,7 +552,6 @@ pub fn main(mut fs: Box<dyn File>, config: &Entry) -> anyhow::Result<!> {
                     .cast::<ApPayload>()
                     .write(ApPayload {
                         satp: vmspace.satp(),
-                        gp: global_ptr,
                         sp: vmspace.direct_map_base() + stack.addr() + stack_size,
                         smp_info: info,
                     });
@@ -614,7 +605,7 @@ pub fn main(mut fs: Box<dyn File>, config: &Entry) -> anyhow::Result<!> {
     let stack_ptr = stack.addr() + stack_size;
     unsafe {
         vmspace.switch_to();
-        spinup(entry_point, stack_ptr, global_ptr);
+        spinup(entry_point, stack_ptr);
     }
 }
 
@@ -657,12 +648,11 @@ macro_rules! zero_regs {
 /// All registers should be cleared to zero (we need to keep one to hold the jump address),
 /// disable interrupts and clear the `stvec` CSR.
 #[naked]
-unsafe extern "C" fn spinup(entry_point: usize, stack_ptr: usize, global_ptr: usize) -> ! {
+unsafe extern "C" fn spinup(entry_point: usize, stack_ptr: usize) -> ! {
     asm!(
         "
             mv      t0, a0      // entry point
             mv      sp, a1      // stack pointer
-            mv      gp, a2      // global pointer
             mv      a0, zero
         ",
         zero_regs!(),
@@ -681,7 +671,6 @@ unsafe extern "C" fn spinup(entry_point: usize, stack_ptr: usize, global_ptr: us
 #[repr(C)]
 struct ApPayload {
     satp: usize,
-    gp: usize,
     sp: usize,
     smp_info: *mut SmpInfo,
 }
@@ -692,7 +681,6 @@ unsafe extern "C" fn ap_spinup() -> ! {
         "
             ld      a0, {ap_smp_info}(a1)
             ld      sp, {ap_sp}(a1)
-            ld      gp, {ap_gp}(a1)
             ld      t0, {ap_satp}(a1)
             csrw    satp, t0
             csrci   sstatus, 0x2 // SIE
@@ -712,7 +700,6 @@ unsafe extern "C" fn ap_spinup() -> ! {
             unimp
         ",
         ap_satp = const offset_of!(ApPayload, satp),
-        ap_gp = const offset_of!(ApPayload, gp),
         ap_sp = const offset_of!(ApPayload, sp),
         ap_smp_info = const offset_of!(ApPayload, smp_info),
         options(noreturn)
