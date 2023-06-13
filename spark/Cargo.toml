@@ -44,7 +44,6 @@ bolt-libelf = { git = "https://github.com/bolt-os/libelf" }
 fdt = { version = "0.1", optional = true }
 libsa = { git = "https://github.com/bolt-os/libsa" }
 log = "0.4"
-memoffset = "0.8"
 rustc-demangle = "0.1"
 sbi = "0.2"
 spin = "0.9"
@@ -62,4 +61,4 @@ default-features = false
 features = [ "unwinder", "fde-static", "personality", "panic" ]
 
 [target.'cfg(uefi)'.dependencies]
-uefi = { git = "https://github.com/bolt-os/uefi", rev = "aa56bfd", features = ["limine"] }
+uefi = { git = "https://github.com/bolt-os/uefi", rev = "d1510e3", features = ["limine"] }

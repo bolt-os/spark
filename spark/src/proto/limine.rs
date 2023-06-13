@@ -39,7 +39,7 @@ use crate::{
     BOOT_HART_ID,
 };
 use alloc::ffi::CString;
-use core::{cmp, ffi::c_char, sync::atomic::Ordering};
+use core::{cmp, ffi::c_char, mem::offset_of, sync::atomic::Ordering};
 use elf::Elf;
 use limine::{
     BootTime, BootTimeRequest, BootloaderInfo, BootloaderInfoRequest, Dtb, DtbRequest,
@@ -49,7 +49,6 @@ use limine::{
     PagingModeResponse, PagingModeResponseFlags, Rsdp, RsdpRequest, Smbios, SmbiosRequest, Smp,
     SmpFlags, SmpInfo, SmpRequest, StackSize, StackSizeRequest, Uuid,
 };
-use memoffset::offset_of;
 
 #[derive(Debug)]
 pub struct ConfigEntry<'src> {
