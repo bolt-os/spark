@@ -88,7 +88,7 @@ fn pci_init(dev: &pcie::Device) -> crate::Result<()> {
     dev.enable_bus_master();
 
     let Some(ctlr) = controller::Controller::initialize(mmio_base) else {
-        return Err(anyhow!("failed to initialize controller"))
+        return Err(anyhow!("failed to initialize controller"));
     };
 
     init_common(ctlr)

@@ -624,7 +624,11 @@ fn alloc_resources(host: &mut HostBridge, device: &mut Device) {
         let bar_size = bar.layout();
 
         let Some(mmio_base) = host.allocate_resource(addr_space, bar_size, bar_size) else {
-            log::warn!("{:?}: failed to allocate BAR{}", device.addr, bar.bar_index());
+            log::warn!(
+                "{:?}: failed to allocate BAR{}",
+                device.addr,
+                bar.bar_index()
+            );
             continue;
         };
 
@@ -650,7 +654,9 @@ fn alloc_resources(host: &mut HostBridge, device: &mut Device) {
 }
 
 fn probe(host: &mut HostBridge, bus: u8, dev: u8, func: u8) -> bool {
-    let Some(mut device) = host.get_device(bus, dev, func) else { return false };
+    let Some(mut device) = host.get_device(bus, dev, func) else {
+        return false;
+    };
 
     if device.kind != DeviceKind::Regular {
         // TODO: Handle PCI-to-PCI bridges. (Is CardBus worth it? I think no.)
@@ -699,7 +705,9 @@ impl DriverCompat {
 }
 
 fn fdt_get_bus_range(node: &fdt::node::FdtNode) -> RangeInclusive<u8> {
-    let Some(property) = node.property("bus-range") else { return 0..=255 };
+    let Some(property) = node.property("bus-range") else {
+        return 0..=255;
+    };
     let bus_range = property.value;
 
     let start_bus = u8::try_from(u32::from_be_bytes(bus_range[..4].try_into().unwrap()))
