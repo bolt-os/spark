@@ -214,11 +214,11 @@ impl<'elf, 'a: 'elf> Rtld<'a, 'elf> {
             let mut count = None;
 
             for entry in dyntab.table_raw() {
-                match entry.tag() {
-                    DynTag::Rela => addr = Some(entry.value()),
-                    DynTag::RelaSize => size = Some(entry.value()),
-                    DynTag::RelaCount => count = Some(entry.value()),
-                    DynTag::RelaEnt => assert_eq!(entry.value(), size_of!(Rela)),
+                match entry.tag {
+                    DynTag::RELA => addr = Some(entry.value),
+                    DynTag::RELASZ => size = Some(entry.value),
+                    DynTag::RELACOUNT => count = Some(entry.value),
+                    DynTag::RELAENT => assert_eq!(entry.value, size_of!(Rela)),
                     _ => {}
                 }
             }
@@ -234,7 +234,9 @@ impl<'elf, 'a: 'elf> Rtld<'a, 'elf> {
     }
 
     pub fn do_relocations(&self) {
-        let Some(relocation_table) = self.relocation_table() else { return };
+        let Some(relocation_table) = self.relocation_table() else {
+            return;
+        };
 
         for reloc_entry in relocation_table {
             let location = self.reloc(reloc_entry.offset as usize);
@@ -266,11 +268,11 @@ pub extern "C" fn _relocate(reloc_slide: usize, mut dyntab: *const elf::Dyn) -> 
         loop {
             let entry = dyntab.read();
 
-            match entry.tag() {
-                DynTag::Null => break,
-                DynTag::Rela => table_addr = Some(entry.value()),
-                DynTag::RelaSize => table_size = Some(entry.value()),
-                DynTag::RelaEnt => entry_size = Some(entry.value()),
+            match entry.tag {
+                DynTag::NULL => break,
+                DynTag::RELA => table_addr = Some(entry.value),
+                DynTag::RELASZ => table_size = Some(entry.value),
+                DynTag::RELAENT => entry_size = Some(entry.value),
                 _ => {}
             }
 
@@ -282,9 +284,15 @@ pub extern "C" fn _relocate(reloc_slide: usize, mut dyntab: *const elf::Dyn) -> 
             return RELOC_OK;
         }
 
-        let Some(table_addr) = table_addr else { return RELOC_ERROR };
-        let Some(table_size) = table_size else { return RELOC_ERROR };
-        let Some(entry_size) = entry_size else { return RELOC_ERROR };
+        let Some(table_addr) = table_addr else {
+            return RELOC_ERROR;
+        };
+        let Some(table_size) = table_size else {
+            return RELOC_ERROR;
+        };
+        let Some(entry_size) = entry_size else {
+            return RELOC_ERROR;
+        };
 
         if entry_size != size_of!(elf::Rela) {
             return RELOC_ERROR;
