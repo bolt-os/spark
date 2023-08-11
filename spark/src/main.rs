@@ -60,6 +60,7 @@
     clippy::debug_assert_with_mut_call
 )]
 #![allow(
+    internal_features,
     clippy::cast_lossless,
     clippy::cast_possible_truncation,
     clippy::cast_ptr_alignment,
