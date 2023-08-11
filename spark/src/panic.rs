@@ -35,11 +35,11 @@ mod uw {
 
     struct TraceData<'a, T> {
         data: &'a mut T,
-        f: &'a mut dyn FnMut(&mut UnwindContext<'_>, &mut T) -> UnwindReasonCode,
+        f: &'a mut dyn FnMut(&UnwindContext<'_>, &mut T) -> UnwindReasonCode,
     }
 
     extern "C" fn backtrace_callback<T>(
-        ctx: &mut UnwindContext<'_>,
+        ctx: &UnwindContext<'_>,
         data: *mut c_void,
     ) -> UnwindReasonCode {
         let data = unsafe { &mut *data.cast::<TraceData<T>>() };
@@ -48,7 +48,7 @@ mod uw {
 
     pub fn backtrace<F, T>(data: &mut T, mut f: F) -> UnwindReasonCode
     where
-        F: FnMut(&mut UnwindContext<'_>, &mut T) -> UnwindReasonCode,
+        F: FnMut(&UnwindContext<'_>, &mut T) -> UnwindReasonCode,
     {
         let mut data = TraceData { data, f: &mut f };
         let data = addr_of_mut!(data).cast::<c_void>();
@@ -67,6 +67,15 @@ pub unsafe fn register_executable(elf: Vec<u8>) {
     *SPARK_ELF.write() = Some(elf);
 }
 
+#[inline]
+fn reloc_offset() -> usize {
+    let offset;
+    unsafe {
+        asm!("lla {}, __image_base", out(reg) offset, options(nomem, nostack, preserves_flags));
+    }
+    offset
+}
+
 #[inline(never)]
 fn trace_stack() {
     use unwinding::abi::*;
@@ -78,15 +87,17 @@ fn trace_stack() {
     let mut count = 0usize;
     uw::backtrace(&mut count, move |ctx, count| {
         let ip = _Unwind_GetIP(ctx);
+        let orig_ip = ip - reloc_offset();
 
-        print!("{count:4}: {ip:#018x}  -  ");
+        print!("{count:4}: {ip:#018x} ({orig_ip:#018x}) -  ");
 
         if let Some(ref elf) = elf
             && let Some(symtab) = elf.symbol_table()
-            && let Some(sym) = symtab.find(|sym| sym.contains_addr(ip as _))
-            && let Some(name) = sym.name()
+            && let Some(sym) = symtab.find(|sym| sym.contains_addr((ip - reloc_offset()) as _))
         {
-            println!("{}", rustc_demangle::demangle(name));
+            let name = rustc_demangle::demangle(sym.name().unwrap_or("<unknown>"));
+            let offset = orig_ip - sym.value() as usize;
+            println!("{name} + {offset:#x}");
         } else {
             println!("<unknown>");
         }
