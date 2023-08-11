@@ -299,7 +299,9 @@ impl File for OpenFile {
             Ok(entry) => entry,
             Err(mut cluster) => loop {
                 // Get the next path component.
-                let Some(name) = path_iter.next() else { return Err(io::Error::NotFound) };
+                let Some(name) = path_iter.next() else {
+                    return Err(io::Error::NotFound);
+                };
                 // Find the entry for the name.
                 let entry = self.fs.lookup(cluster, name)?;
                 if path_iter.peek().is_none() {

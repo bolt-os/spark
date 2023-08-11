@@ -413,6 +413,7 @@ impl IoCommandSetWithIdentifyNamespace for NvmCommandSet {
 
 bitflags::bitflags! {
     #[repr(transparent)]
+    #[derive(Clone, Copy, Debug)]
     pub struct NamespaceFeatures : u8 {
         const THINP    = 1 << 0;
         const NSABP    = 1 << 1;

@@ -317,6 +317,7 @@ pub const fn pow2_is_aligned(addr: usize, align: usize) -> bool {
 }
 
 bitflags::bitflags! {
+    #[derive(Clone, Copy, Debug)]
     pub struct MapFlags : u32 {
         const READ  = 1 << 0;
         const WRITE = 1 << 1;
@@ -326,7 +327,7 @@ bitflags::bitflags! {
         const HUGE2M = 1 << 4;
         const HUGE1G = 1 << 5;
 
-        const RWX   = Self::READ.bits | Self::WRITE.bits | Self::EXEC.bits;
+        const RWX   = Self::READ.bits() | Self::WRITE.bits() | Self::EXEC.bits();
     }
 }
 

@@ -331,6 +331,7 @@ struct GptPartitionEntry {
 
 bitflags::bitflags! {
     #[repr(transparent)]
+    #[derive(Clone, Copy, Debug)]
     struct GptPartitionAttrs : u64 {
         const REQUIRED              = 1 << 0;
         const NO_BLOCK_IO           = 1 << 1;

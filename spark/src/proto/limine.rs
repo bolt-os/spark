@@ -587,17 +587,14 @@ pub fn main(mut fs: Box<dyn File>, config: &Entry) -> anyhow::Result<!> {
     drop(fs);
 
     // Memory Map
-    println!("memor");
     if let Some(req) = requests.memory_map {
         let mut response = Box::<MemoryMap>::new_uninit();
         let memory_map = pmm::generate_limine_memory_map(&mut vmspace);
-        println!("MEMOERY");
         unsafe {
             response.as_mut_ptr().write(memory_map);
             req.set_response(leak_hhdm_boxed(&vmspace, response.assume_init()));
         }
     }
-    println!("done");
 
     // ===================================================
     //      NO MEMORY ALLOCATION AFTER THIS POINT !!!

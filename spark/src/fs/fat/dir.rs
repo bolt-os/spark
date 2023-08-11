@@ -64,7 +64,7 @@ impl From<DirAttrs> for FileType {
 
 impl DirAttrs {
     pub const fn new(bits: u8) -> DirAttrs {
-        Self { bits }
+        Self::from_bits_retain(bits)
     }
 }
 

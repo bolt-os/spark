@@ -46,6 +46,7 @@ use libsa::{
 bitflags::bitflags! {
     /// Controller Capabilities
     #[repr(transparent)]
+    #[derive(Clone, Copy, Debug)]
     pub(super) struct Capabilities : u64 {
         /// NVM Command Set is supported
         ///
@@ -59,7 +60,7 @@ bitflags::bitflags! {
 impl Capabilities {
     fn new(bits: u64) -> Capabilities {
         // SAFETY: We want to keep undefined fields.
-        unsafe { Self::from_bits_unchecked(bits) }
+        Self::from_bits_retain(bits)
     }
 
     /// Returns the controller timeout
@@ -67,25 +68,25 @@ impl Capabilities {
     /// This is the maximum amount of time the driver should wait for [`Status::RDY`] to
     /// change state after `CC.EN` changes state.
     fn timeout(self) -> Duration {
-        let ms = self.bits >> 24 & 0xff;
+        let ms = self.bits() >> 24 & 0xff;
         // The value reported is in units of 500ms.
         Duration::from_millis(ms * 500)
     }
 
     fn doorbell_stride(self) -> usize {
-        let dstrd = (self.bits >> 32) & 0xf;
+        let dstrd = (self.bits() >> 32) & 0xf;
         4 << dstrd
     }
 
     /// Returns the minimum host page size supported by the controller
     pub(super) fn min_page_size(self) -> usize {
-        let mpsmin = (self.bits >> 48) & 0xf;
+        let mpsmin = (self.bits() >> 48) & 0xf;
         0x1000 << mpsmin
     }
 
     /// Returns the maximum host page size supported by the controller
     fn max_page_size(self) -> usize {
-        let mpsmax = (self.bits >> 52) & 0xf;
+        let mpsmax = (self.bits() >> 52) & 0xf;
         0x1000 << mpsmax
     }
 }
@@ -93,6 +94,7 @@ impl Capabilities {
 bitflags::bitflags! {
     /// Controller Status
     #[repr(transparent)]
+    #[derive(Clone, Copy, Debug)]
     struct Status : u32 {
         /// Controller Ready
         ///
@@ -109,7 +111,7 @@ bitflags::bitflags! {
 impl Status {
     const fn new(bits: u32) -> Status {
         // SAFETY: We want to keep undefined fields.
-        unsafe { Self::from_bits_unchecked(bits) }
+        Self::from_bits_retain(bits)
     }
 }
 

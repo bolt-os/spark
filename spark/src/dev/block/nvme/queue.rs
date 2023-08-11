@@ -61,6 +61,7 @@ pub struct CompletionQueueEntry {
 
 bitflags::bitflags! {
     #[repr(transparent)]
+    #[derive(Clone, Copy, Debug)]
     pub struct CompletionStatus : u16 {
         const PHASE = 1 << 0;
     }
@@ -68,11 +69,11 @@ bitflags::bitflags! {
 
 impl CompletionStatus {
     pub fn code_type(self) -> u8 {
-        (self.bits >> 9 & 7) as u8
+        (self.bits() >> 9 & 7) as u8
     }
 
     pub fn code(self) -> u8 {
-        (self.bits >> 1) as u8
+        (self.bits() >> 1) as u8
     }
 }
 
@@ -139,7 +140,7 @@ impl QueuePair {
     pub fn completion_status(&self, com_idx: u16) -> CompletionStatus {
         unsafe {
             let bits = ptr::addr_of!((*self.comq.add(com_idx as _)).status).read_volatile();
-            CompletionStatus::from_bits_unchecked(bits.get())
+            CompletionStatus::from_bits_retain(bits.get())
         }
     }
 }

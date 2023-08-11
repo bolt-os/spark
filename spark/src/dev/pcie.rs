@@ -401,7 +401,7 @@ mod device {
         }
 
         fn read_command_register(&self) -> CommandRegister {
-            unsafe { CommandRegister::from_bits_unchecked(self.ecam.read_u16(0x4)) }
+            unsafe { CommandRegister::from_bits_retain(self.ecam.read_u16(0x4)) }
         }
 
         unsafe fn write_command_register(&self, cmd: CommandRegister) {
@@ -444,6 +444,7 @@ mod device {
 
     bitflags::bitflags! {
         #[repr(transparent)]
+        #[derive(Clone, Copy, Debug)]
         pub struct CommandRegister : u16 {
             const IO_SPACE                              = 1 << 0;
             const MEMORY_SPACE                          = 1 << 1;
@@ -851,6 +852,7 @@ impl Range {
 
 bitflags::bitflags! {
     #[repr(transparent)]
+    #[derive(Clone, Copy, Debug)]
     struct RangeFlags : u8 {
         const NON_RELOCATABLE = 0x80;
         const PREFETCHABLE    = 0x40;
@@ -860,8 +862,7 @@ bitflags::bitflags! {
 
 impl RangeFlags {
     const fn from_phys_hi(phys_hi: u32) -> RangeFlags {
-        // SAFETY: I say it is fine, therefore it is fine.
-        unsafe { Self::from_bits_unchecked((phys_hi >> 24) as u8) }
+        Self::from_bits_retain((phys_hi >> 24) as u8)
     }
 }
 
