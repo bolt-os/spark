@@ -3,9 +3,11 @@
 pub mod build;
 pub mod runner;
 
+use build::BuildCmd;
 use clap::{AppSettings, Parser};
 use core::fmt;
 use std::{env, path::PathBuf, process::Command, str::FromStr};
+use xtask::concat_paths;
 
 #[allow(non_camel_case_types)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -60,7 +62,8 @@ pub struct SparkBuildOptions {
 }
 
 pub struct BuildCtx {
-    shell: xshell::Shell,
+    pwd: PathBuf,
+    build_dir: PathBuf,
     target_dir: PathBuf,
     cargo_cmd: String,
     objcopy_cmd: PathBuf,
@@ -73,10 +76,8 @@ fn find_objcopy() -> anyhow::Result<PathBuf> {
         }
     }
 
-    let shell = xshell::Shell::new()?;
-
     for cmd in ["llvm-objcopy", "riscv64-unknown-elf-objcopy", "objcopy"] {
-        if shell.cmd(cmd).arg("-V").quiet().run().is_ok() {
+        if Command::new(cmd).arg("-V").output()?.status.success() {
             return Ok(PathBuf::from(cmd));
         }
     }
@@ -92,8 +93,11 @@ fn find_objcopy() -> anyhow::Result<PathBuf> {
 
 impl BuildCtx {
     fn new() -> anyhow::Result<BuildCtx> {
-        let mut target_dir = env::current_dir()?;
-        target_dir.push("target");
+        let pwd = env::current_dir()?;
+        let build_dir = concat_paths!(pwd, "build");
+        let target_dir = concat_paths!(pwd, "target");
+
+        xtask::fs::make_dir(&build_dir)?;
 
         /*
          * When we're invoked through cargo, it will set $CARGO to its path.
@@ -105,9 +109,10 @@ impl BuildCtx {
         };
 
         Ok(Self {
+            pwd,
+            build_dir,
             target_dir,
             cargo_cmd,
-            shell: xshell::Shell::new()?,
             objcopy_cmd: find_objcopy()?,
         })
     }
@@ -117,6 +122,7 @@ impl BuildCtx {
 #[clap(rename_all = "snake_case", setting = AppSettings::DisableVersionFlag)]
 enum Arguments {
     Build(build::Options),
+    Check(build::Options),
     Doc(build::Options),
     Run(runner::Options),
 }
@@ -125,23 +131,11 @@ fn main() -> anyhow::Result<()> {
     let ctx = BuildCtx::new()?;
 
     match Arguments::parse() {
-        Arguments::Build(build_options) => build::build(&ctx, build_options, false)?,
+        Arguments::Build(build_options) => build::build(&ctx, build_options, BuildCmd::Build)?,
+        Arguments::Check(build_options) => build::build(&ctx, build_options, BuildCmd::Check)?,
+        Arguments::Doc(build_options) => build::build(&ctx, build_options, BuildCmd::Doc)?,
         Arguments::Run(run_options) => runner::run(&ctx, run_options)?,
-        Arguments::Doc(build_options) => build::build(&ctx, build_options, true)?,
     }
 
-    Ok(())
-}
-
-fn run_command(mut cmd: Command) -> anyhow::Result<()> {
-    eprintln!(
-        "+ {} {}",
-        cmd.get_program().to_string_lossy(),
-        cmd.get_args()
-            .collect::<Vec<_>>()
-            .join(" ".as_ref())
-            .to_string_lossy()
-    );
-    cmd.spawn()?.wait()?.exit_ok()?;
     Ok(())
 }

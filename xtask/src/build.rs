@@ -1,15 +1,12 @@
-use crate::{BuildCtx, SparkBuildOptions};
+use crate::{BuildCtx, SparkBuildOptions, Target};
 use clap::Parser;
-use xshell::cmd;
+use std::{ffi::OsStr, process::Command};
+use xtask::{concat_paths, process::CommandExt};
 
 #[derive(Parser)]
 pub struct Options {
     #[clap(flatten)]
     pub general_options: SparkBuildOptions,
-
-    /// Whether to use `cargo clippy` rather than `cargo build`.
-    #[clap(short, long)]
-    pub clippy: bool,
 }
 
 impl core::ops::Deref for Options {
@@ -20,88 +17,95 @@ impl core::ops::Deref for Options {
     }
 }
 
-static REQUIRED_ROOT_DIRS: [&str; 2] = [".hdd/", ".debug/"];
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BuildCmd {
+    Build,
+    Check,
+    Doc,
+}
 
-pub fn build(ctx: &BuildCtx, options: Options, document: bool) -> anyhow::Result<()> {
-    /* setup default files and folders */
+pub fn build(ctx: &BuildCtx, options: Options, cmd: BuildCmd) -> anyhow::Result<()> {
+    let spark_dir = concat_paths!(ctx.pwd, "spark");
+    let rust_target =
+        concat_paths!(spark_dir, "conf", options.target.triple()).with_extension("json");
+    let linker_script =
+        concat_paths!(spark_dir, "conf", options.target.to_string()).with_extension("ld");
+
+    let rustflags = format!(
+        "--cfg {} {}",
+        match options.target {
+            crate::Target::riscv_sbi => "sbi",
+            crate::Target::riscv_uefi => "uefi",
+        },
+        if options.verbose { "-v " } else { "" }
+    );
+
+    let envs: &[(&dyn AsRef<OsStr>, &dyn AsRef<OsStr>)] = &[
+        (&"RUSTFLAGS", &rustflags),
+        (&"SPARK_LINKER_SCRIPT", &linker_script),
+    ];
+
+    // Format the source.
     {
-        for root_dir in REQUIRED_ROOT_DIRS {
-            if !ctx.shell.path_exists(root_dir) {
-                ctx.shell.create_dir(root_dir)?;
-            }
-        }
-    }
+        let mut cargo = Command::new(&ctx.cargo_cmd);
 
-    /* bootloader */
-    {
-        let _dir = ctx.shell.push_dir("spark/");
+        cargo.arg("fmt");
 
-        let cargo_cmd = &ctx.cargo_cmd;
-        let cargo_cmd_str = if options.clippy { "clippy" } else { "build" };
-        let profile_str = if options.release { "release" } else { "dev" };
-        let verbose: &[&str] = if options.verbose { &["-vv"] } else { &[] };
-        let target_dir = &ctx.target_dir;
-        let rust_target = format!("conf/{}.json", options.target.triple());
-
-        let linker_script = format!("conf/{}.ld", options.target);
-        let _env_linker_script = ctx.shell.push_env("SPARK_LINKER_SCRIPT", &linker_script);
-
-        let mut rustflags = format!(
-            "--cfg {} ",
-            match options.target {
-                crate::Target::riscv_sbi => "sbi",
-                crate::Target::riscv_uefi => "uefi",
-            }
-        );
         if options.verbose {
-            rustflags.push_str("-v ");
+            cargo.arg("-vv");
         }
-        let _rustflags = ctx.shell.push_env("RUSTFLAGS", &rustflags);
-
-        let fmt_check: &[&str] = if options.ci { &["--check"] } else { &[] };
-        cmd!(ctx.shell, "{cargo_cmd} fmt {verbose...} {fmt_check...}").run()?;
-
-        if !document {
-            cmd!(
-                ctx.shell,
-                "
-                    {cargo_cmd} {cargo_cmd_str}
-                        --profile {profile_str}
-                        --target {rust_target}
-                        --target-dir {target_dir}
-                        {verbose...}
-                "
-            )
-            .run()?;
-        } else {
-            cmd!(
-                ctx.shell,
-                "
-                    {cargo_cmd} doc
-                        --bin spark
-                        --document-private-items
-                        --profile {profile_str}
-                        --target {rust_target}
-                        --target-dir {target_dir}
-                        {verbose...}
-                "
-            )
-            .run()?;
+        if options.ci {
+            cargo.arg("--check");
         }
+
+        cargo
+            .current_dir(&spark_dir)
+            .envs(envs.iter().copied())
+            .execute()?;
     }
 
-    if !document && !options.clippy {
-        let profile = if options.release { "release" } else { "debug" };
-        let target_elf = format!("target/{}/{profile}/spark", options.target.triple());
-        let spark_elf = format!(".hdd/spark-{}-{profile}.elf", options.target);
-        let spark_bin = format!(".hdd/spark-{}-{profile}.bin", options.target);
+    // Run cargo command.
+    let mut cargo = Command::new(&ctx.cargo_cmd);
+    cargo
+        .args::<&[_], _>(match cmd {
+            BuildCmd::Build => &["build"],
+            BuildCmd::Check => &["clippy"],
+            BuildCmd::Doc => &["doc", "--bin", "spark", "--document-private-items"],
+        })
+        .args(["--profile", if options.release { "release" } else { "dev" }])
+        .arg("--target")
+        .arg(&rust_target)
+        .arg("--target-dir")
+        .arg(&ctx.target_dir);
+    if options.verbose {
+        cargo.arg("-vv");
+    }
+    cargo
+        .current_dir(&spark_dir)
+        .envs(envs.iter().copied())
+        .execute()?;
 
-        // Copy binary to root hdd
-        ctx.shell.copy_file(&target_elf, &spark_elf)?;
+    // Actually building the bootloader requires some more steps.
+    if cmd == BuildCmd::Build {
+        // Copy binary to build directory
+        let profile = if options.release { "release" } else { "debug" };
+        let target_elf = concat_paths!(ctx.target_dir, options.target.triple(), profile, "spark");
+        let spark_elf = concat_paths!(
+            ctx.build_dir,
+            format!("spark-{}-{profile}.elf", options.target)
+        );
+        xtask::fs::copy(target_elf, &spark_elf)?;
 
         // Create a flat binary
-        let objcopy = &ctx.objcopy_cmd;
-        cmd!(ctx.shell, "{objcopy} -O binary {target_elf} {spark_bin}").run()?;
+        let spark_bin = match options.target {
+            Target::riscv_sbi => spark_elf.with_extension("bin"),
+            Target::riscv_uefi => concat_paths!(ctx.build_dir, "BOOTRISCV64.EFI"),
+        };
+        Command::new(&ctx.objcopy_cmd)
+            .args(["-O", "binary"])
+            .arg(spark_elf)
+            .arg(spark_bin)
+            .execute()?;
     }
 
     Ok(())

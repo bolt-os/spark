@@ -1,6 +1,7 @@
-use crate::{run_command, BuildCtx, SparkBuildOptions};
+use crate::{BuildCtx, SparkBuildOptions, Target};
 use clap::{clap_derive::ArgEnum, Parser};
 use std::{ffi::OsString, path::PathBuf, process::Command};
+use xtask::process::CommandExt;
 
 #[derive(ArgEnum, Clone, Copy)]
 pub enum BlockDriver {
@@ -80,6 +81,10 @@ impl core::ops::Deref for Options {
 }
 
 pub fn run(ctx: &BuildCtx, options: Options) -> anyhow::Result<()> {
+    if options.target != Target::riscv_sbi {
+        todo!("uefi runner");
+    }
+
     /*
      * Make sure we run an up-to-date version of the bootloader.
      */
@@ -87,14 +92,9 @@ pub fn run(ctx: &BuildCtx, options: Options) -> anyhow::Result<()> {
         ctx,
         crate::build::Options {
             general_options: options.general_options.clone(),
-            clippy: false,
         },
-        false,
+        crate::build::BuildCmd::Build,
     )?;
-
-    if !ctx.shell.path_exists(".hdd/disk0.img") {
-        xshell::cmd!(ctx.shell, "qemu-img create -f raw .hdd/disk0.img 256M").run()?;
-    }
 
     let spark_elf = PathBuf::from(format!(
         ".hdd/spark-{}-{}.elf",
@@ -157,9 +157,7 @@ pub fn run(ctx: &BuildCtx, options: Options) -> anyhow::Result<()> {
         qemu.args(["-fw_cfg", &arg]);
     }
 
-    qemu.args(options.emu_args);
-
-    run_command(qemu)?;
+    qemu.args(options.emu_args).execute()?;
 
     Ok(())
 }
