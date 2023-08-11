@@ -63,6 +63,7 @@ impl File {
     }
 }
 
+#[allow(clippy::missing_fields_in_debug)]
 impl fmt::Debug for File {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut dbg = f.debug_struct("File");
