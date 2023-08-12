@@ -39,7 +39,7 @@ proto-limine = ["limine"]
 [dependencies]
 acpi = { git = "https://github.com/bolt-os/acpi", rev = "8b1520a", optional = true }
 anyhow = { version = "1.0", default-features = false }
-bitflags = "2.3"
+bitflags = "2.4"
 bolt-libelf = { git = "https://github.com/bolt-os/libelf" }
 fdt = { version = "0.1", optional = true }
 libsa = { git = "https://github.com/bolt-os/libsa" }

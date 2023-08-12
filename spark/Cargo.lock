@@ -31,9 +31,9 @@ checksum = "bef38d45163c2f1dde094a7dfd33ccf595c92905c8f8f4fdc18d06fb1037718a"
 
 [[package]]
 name = "bitflags"
-version = "2.3.3"
+version = "2.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "630be753d4e58660abd17930c71b647fe46c27ea6b63cc59e1e3851406972e42"
+checksum = "b4682ae6287fcf752ecaabbfcc7b6f9b72aa33933dc23a554d853aea8eea8635"
 
 [[package]]
 name = "bolt-libelf"
@@ -58,7 +58,7 @@ checksum = "22030e2c5a68ec659fde1e949a745124b48e6fa8b045b7ed5bd1fe4ccc5c4e5d"
 [[package]]
 name = "libsa"
 version = "0.1.0"
-source = "git+https://github.com/bolt-os/libsa#b5f0a9af7e6cd1426418b7e5f9678f97b3e00fd3"
+source = "git+https://github.com/bolt-os/libsa#b33117aa5bd922e7f0e017dd4febf82f7110b723"
 
 [[package]]
 name = "limine"
@@ -109,7 +109,7 @@ version = "0.1.0"
 dependencies = [
  "acpi",
  "anyhow",
- "bitflags 2.3.3",
+ "bitflags 2.4.0",
  "bolt-libelf",
  "fdt",
  "libsa",
