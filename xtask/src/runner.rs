@@ -1,34 +1,7 @@
 use crate::{BuildCtx, SparkBuildOptions, Target};
-use clap::{clap_derive::ArgEnum, Parser};
+use clap::Parser;
 use std::{ffi::OsString, path::PathBuf, process::Command};
 use xtask::process::CommandExt;
-
-#[derive(ArgEnum, Clone, Copy)]
-pub enum BlockDriver {
-    None,
-    Ahci,
-    Nvme,
-    Virtio,
-    VirtioPci,
-}
-
-impl BlockDriver {
-    const fn is_virtio(self) -> bool {
-        matches!(self, Self::Virtio | Self::VirtioPci)
-    }
-}
-
-impl core::fmt::Debug for BlockDriver {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str(match self {
-            BlockDriver::None => "none",
-            BlockDriver::Ahci => "ahci",
-            BlockDriver::Nvme => "nvme",
-            BlockDriver::Virtio => "virtio-blk-device",
-            BlockDriver::VirtioPci => "virtio-blk-pci",
-        })
-    }
-}
 
 #[derive(Parser)]
 pub struct Options {
@@ -60,10 +33,6 @@ pub struct Options {
     /// Stops QEMU from automatically exiting when a triple fault occurs.
     #[clap(long)]
     no_shutdown: bool,
-
-    /// Which type of block driver to use for root drive.
-    #[clap(arg_enum, long, default_value = "virtio")]
-    block: BlockDriver,
 
     #[clap(long, default_value = "qemu-system-riscv64")]
     qemu: PathBuf,
@@ -121,33 +90,6 @@ pub fn run(ctx: &BuildCtx, options: Options) -> anyhow::Result<()> {
     if options.log {
         qemu.args(["-d", "int,guest_errors", "-D", ".debug/qemu-log.txt"]);
     }
-
-    match options.block {
-        BlockDriver::None => {}
-        BlockDriver::Ahci => {
-            qemu.args([
-                "-device",
-                "ahci,id=ahci",
-                "-device",
-                "ide-hd,drive=disk0,bus=ahci.0",
-            ]);
-        }
-        BlockDriver::Nvme => {
-            qemu.args(["-device", "nvme,serial=deadbeef,drive=disk0"]);
-        }
-        BlockDriver::Virtio => {
-            qemu.args(["-device", "virtio-blk-device,serial=deadbeef,drive=disk0"]);
-        }
-        BlockDriver::VirtioPci => {
-            qemu.args(["-device", "virtio-blk-pci,serial=deadbeef,drive=disk0"]);
-        }
-    }
-
-    if options.block.is_virtio() {
-        qemu.args(["-global", "virtio-mmio.force-legacy=false"]);
-    }
-
-    qemu.args(["-drive", "id=disk0,format=raw,if=none,file=.hdd/disk0.img"]);
 
     qemu.arg("-kernel");
     qemu.arg(&spark_bin);
