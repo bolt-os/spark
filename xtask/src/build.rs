@@ -1,4 +1,4 @@
-use crate::{BuildCtx, SparkBuildOptions, Target};
+use crate::{BuildCtx, SparkBuildOptions};
 use clap::Parser;
 use std::{ffi::OsStr, process::Command};
 use xtask::{concat_paths, process::CommandExt};

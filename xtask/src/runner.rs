@@ -65,8 +65,8 @@ pub fn run(ctx: &BuildCtx, options: Options) -> anyhow::Result<()> {
         crate::build::BuildCmd::Build,
     )?;
 
-    let spark_elf = PathBuf::from(format!(
-        ".hdd/spark-{}-{}.elf",
+    let spark_elf = ctx.build_dir.join(format!(
+        "spark-{}-{}.elf",
         options.target,
         if options.release { "release" } else { "debug" }
     ));
