@@ -97,10 +97,7 @@ pub fn build(ctx: &BuildCtx, options: Options, cmd: BuildCmd) -> anyhow::Result<
         xtask::fs::copy(target_elf, &spark_elf)?;
 
         // Create a flat binary
-        let spark_bin = match options.target {
-            Target::riscv_sbi => spark_elf.with_extension("bin"),
-            Target::riscv_uefi => concat_paths!(ctx.build_dir, "BOOTRISCV64.EFI"),
-        };
+        let spark_bin = spark_elf.with_extension("bin");
         Command::new(&ctx.objcopy_cmd)
             .args(["-O", "binary"])
             .arg(spark_elf)
