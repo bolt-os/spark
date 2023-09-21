@@ -70,6 +70,10 @@ mod ranges {
             self.base + self.size
         }
 
+        pub fn is_empty(&self) -> bool {
+            self.size == 0
+        }
+
         fn overlaps_with(&self, other: &InitRange) -> bool {
             other.start() <= self.end() && other.end() >= self.start()
         }
@@ -98,22 +102,30 @@ mod ranges {
             &self.ranges[..self.len]
         }
 
+        fn insert_range(&mut self, index: usize, range: InitRange) {
+            assert!(self.len < Self::MAX_RANGES, "too many memory ranges");
+
+            self.ranges.copy_within(index..self.len, index + 1);
+            self.ranges[index] = range;
+            self.len += 1;
+        }
+
+        fn remove_range(&mut self, index: usize) {
+            self.ranges.copy_within(index + 1.., index);
+            self.len -= 1;
+        }
+
         pub fn insert(&mut self, base: usize, size: usize) {
             let insert_range = InitRange { base, size };
 
-            if self
+            assert!(!self
                 .ranges()
                 .iter()
-                .any(|range| range.overlaps_with(&insert_range))
-            {
-                panic!("overlapping free memory ranges");
-            }
+                .any(|range| range.overlaps_with(&insert_range)));
 
             let insertion_point = self
-                .ranges
+                .ranges()
                 .partition_point(|range| insert_range.start() < range.start());
-
-            debug_assert!(insertion_point <= self.len);
 
             if insertion_point > 0 {
                 let prev = &mut self.ranges[insertion_point - 1];
@@ -147,20 +159,27 @@ mod ranges {
                 .iter_mut()
                 .enumerate()
                 .find(|(_, range)| range.contains(&remove_range))
-                .expect("msg;");
+                .expect("`remove()` called without previous enclosing `insert()`");
 
+            // Handle the simple case of removing from the front ..
             if base == from_range.base {
                 from_range.size -= size;
                 from_range.base = base + size;
+                // Remove the entry if it has become empty.
+                if from_range.is_empty() {
+                    self.remove_range(index);
+                }
                 return;
             }
-
+            // .. and from the back.
             if base + size == from_range.end() {
                 from_range.size -= size;
+                // Remove the entry if it has become empty.
+                if from_range.is_empty() {
+                    self.remove_range(index);
+                }
                 return;
             }
-
-            assert!(self.len < Self::MAX_RANGES, "too many memory ranges");
 
             let new_range = InitRange {
                 base: remove_range.end(),
@@ -169,11 +188,7 @@ mod ranges {
 
             from_range.size = remove_range.start() - from_range.start();
 
-            let insertion_point = index + 1;
-            self.ranges
-                .copy_within(insertion_point..self.len, insertion_point + 1);
-            self.ranges[insertion_point] = new_range;
-            self.len += 1;
+            self.insert_range(index + 1, new_range);
         }
     }
 }
