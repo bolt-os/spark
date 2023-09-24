@@ -6,7 +6,7 @@ pub mod runner;
 use build::BuildCmd;
 use clap::Parser;
 use core::fmt;
-use std::{env, path::PathBuf, process::Command, str::FromStr};
+use std::{env, ffi::OsString, path::PathBuf, process::Command, str::FromStr};
 use xtask::concat_paths;
 
 #[allow(non_camel_case_types)]
@@ -18,10 +18,7 @@ pub enum Target {
 
 impl fmt::Display for Target {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Target::riscv_sbi => write!(f, "riscv-sbi"),
-            Target::riscv_uefi => write!(f, "riscv-uefi"),
-        }
+        f.write_str(self.as_str())
     }
 }
 
@@ -38,6 +35,13 @@ impl FromStr for Target {
 }
 
 impl Target {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Target::riscv_sbi => "riscv-sbi",
+            Target::riscv_uefi => "riscv-uefi",
+        }
+    }
+
     const fn triple(self) -> &'static str {
         match self {
             Target::riscv_sbi => "riscv64gc-unknown-none",
@@ -59,14 +63,48 @@ pub struct SparkBuildOptions {
 
     #[clap(long)]
     pub ci: bool,
+
+    #[clap(long)]
+    pub cargo: Option<OsString>,
+    #[clap(long)]
+    pub objcopy: Option<OsString>,
+}
+
+macro_rules! common_cmds {
+    ($($name:ident $(, $args:ident)?;)*) => {
+        struct CommonCmds {
+            $($name: OsString $(, $args: Vec<OsString>)?),*
+        }
+
+        impl CommonCmds {
+            $(
+                fn $name(&self) -> Command {
+                    #[allow(unused_mut)]
+                    let mut cmd = Command::new(&self.$name);
+                    $(cmd.args(&self.$args);)?
+                    cmd
+                }
+            )*
+        }
+    };
+}
+
+common_cmds! {
+    cargo;
+    objcopy;
+}
+
+struct CommonPaths {
+    spark_dir: PathBuf,
+    rust_target_dir: PathBuf,
+    rust_build_dir: PathBuf,
+    build_dir: PathBuf,
 }
 
 pub struct BuildCtx {
-    pwd: PathBuf,
-    build_dir: PathBuf,
-    target_dir: PathBuf,
-    cargo_cmd: String,
-    objcopy_cmd: PathBuf,
+    cmds: CommonCmds,
+    paths: CommonPaths,
+    rust_profile: String,
 }
 
 fn find_objcopy() -> anyhow::Result<PathBuf> {
@@ -92,28 +130,48 @@ fn find_objcopy() -> anyhow::Result<PathBuf> {
 }
 
 impl BuildCtx {
-    fn new() -> anyhow::Result<BuildCtx> {
+    fn new(opts: &SparkBuildOptions) -> anyhow::Result<BuildCtx> {
+        let (profile, rust_profile) = if opts.release {
+            ("release", "release")
+        } else {
+            ("debug", "dev")
+        };
+
         let pwd = env::current_dir()?;
-        let build_dir = concat_paths!(pwd, "build");
-        let target_dir = concat_paths!(pwd, "target");
+        let rust_target_dir = pwd.join("target");
+        let paths = CommonPaths {
+            build_dir: concat_paths!(pwd, "build", opts.target.as_str(), profile),
+            rust_build_dir: concat_paths!(rust_target_dir, opts.target.triple(), profile),
+            rust_target_dir,
+            spark_dir: pwd.join("spark"),
+        };
 
-        xtask::fs::make_dir(&build_dir)?;
+        xtask::fs::make_dir(&paths.build_dir)?;
 
-        /*
-         * When we're invoked through cargo, it will set $CARGO to its path.
-         * This may be different than what we get with `cargo`.
-         */
-        let cargo_cmd = match env::var("CARGO") {
-            Ok(cmd) => cmd,
-            Err(_) => "cargo".into(),
+        macro_rules! find_command {
+            ($opt:ident, $env:expr, $def:expr $(,)?) => {
+                opts.$opt
+                    .clone()
+                    .unwrap_or_else(|| env::var_os($env).unwrap_or_else(|| $def))
+                    .into()
+            };
+        }
+
+        let cmds = CommonCmds {
+            cargo: find_command!(cargo, "CARGO", "rustc".into()),
+            objcopy: find_command!(
+                objcopy,
+                "OBJCOPY",
+                find_objcopy()
+                    .unwrap_or_else(|_| "llvm-objcopy".into())
+                    .into_os_string()
+            ),
         };
 
         Ok(Self {
-            pwd,
-            build_dir,
-            target_dir,
-            cargo_cmd,
-            objcopy_cmd: find_objcopy()?,
+            cmds,
+            paths,
+            rust_profile: rust_profile.to_string(),
         })
     }
 }
@@ -126,10 +184,22 @@ enum Arguments {
     Run(runner::Options),
 }
 
-fn main() -> anyhow::Result<()> {
-    let ctx = BuildCtx::new()?;
+impl Arguments {
+    fn global_opts(&self) -> &SparkBuildOptions {
+        match self {
+            Arguments::Build(opts) => opts,
+            Arguments::Check(opts) => opts,
+            Arguments::Doc(opts) => opts,
+            Arguments::Run(opts) => opts,
+        }
+    }
+}
 
-    match Arguments::parse() {
+fn main() -> anyhow::Result<()> {
+    let args = Arguments::parse();
+    let ctx = BuildCtx::new(args.global_opts())?;
+
+    match args {
         Arguments::Build(build_options) => build::build(&ctx, build_options, BuildCmd::Build)?,
         Arguments::Check(build_options) => build::build(&ctx, build_options, BuildCmd::Check)?,
         Arguments::Doc(build_options) => build::build(&ctx, build_options, BuildCmd::Doc)?,

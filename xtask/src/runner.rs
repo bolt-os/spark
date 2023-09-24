@@ -65,11 +65,7 @@ pub fn run(ctx: &BuildCtx, options: Options) -> anyhow::Result<()> {
         crate::build::BuildCmd::Build,
     )?;
 
-    let spark_elf = ctx.build_dir.join(format!(
-        "spark-{}-{}.elf",
-        options.target,
-        if options.release { "release" } else { "debug" }
-    ));
+    let spark_elf = ctx.paths.build_dir.join("spark.elf");
     let spark_bin = spark_elf.with_extension("bin");
 
     let mut qemu = Command::new(&options.qemu);
