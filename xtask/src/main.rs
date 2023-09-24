@@ -4,7 +4,7 @@ pub mod build;
 pub mod runner;
 
 use build::BuildCmd;
-use clap::{AppSettings, Parser};
+use clap::Parser;
 use core::fmt;
 use std::{env, path::PathBuf, process::Command, str::FromStr};
 use xtask::concat_paths;
@@ -119,7 +119,6 @@ impl BuildCtx {
 }
 
 #[derive(Parser)]
-#[clap(rename_all = "snake_case", setting = AppSettings::DisableVersionFlag)]
 enum Arguments {
     Build(build::Options),
     Check(build::Options),
