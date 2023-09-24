@@ -1,14 +1,15 @@
 # Spark
 
-Spark is a simple, 64-bit bootloader for RISC-V.
+`spark` is a 64-bit bootloader for RISC-V, implementing the [Limine Boot Protocol](https://github.com/limine-bootloader/limine/blob/trunk/PROTOCOL.md)
+for both SBI and UEFI systems.
 
 ## Building
 
-`spark` uses the `xtask` framework as its build system to gain more control over the process
-than is possible with `cargo` alone. The `xtask` is aliased to `cargo xtask` for convenience.
+`spark` uses a custom build tool called `xtask` which wraps `cargo` and controls the entire
+build process. To build the bootloader, simply run `cargo xtask build [--release]`.
+The final build artifacts will be output into the `build/` directory.
 
-To build `spark`, simply run `cargo xtask build [--release]` in the root of this repository.
-A `.hdd` directory will be created containing the build artifacts.
+For a full list of the available build options, run `cargo xtask build --help`.
 
 ## Using the Bootloader
 
@@ -34,17 +35,17 @@ Alternatively, you can create a disk image to use as the backing for the drive:
 `spark.cfg`:
 ```
 boot "my awesome kernel" {
-    protocol = "bootelf";
+    protocol = "limine";
     kernel-path = "boot:///boot/kernel.elf";
 }
 ```
 
 ```
-$ mkdir -p ./root/boot
-$ cp path/to/kernel.elf ./root/boot/kernel.elf
-$ cp path/to/spark.cfg  ./root/boot/spark.cfg
+$ mkdir -p ./root
+$ cp path/to/kernel.elf ./root/
+$ cp path/to/spark.cfg  ./root/
 $ qemu-system-riscv64 -machine virt -cpu rv64 \
-    -kernel spark-riscv-sbi-release.bin \
+    -kernel spark.bin \
     -device nvme,serial=deadbeff,drive=disk1 \
     -drive id=disk1,format=raw,if=none,file=./root
 ```
