@@ -8,6 +8,7 @@ anyhow = "1.0"
 clap = { version = "*", features = ["derive"] }
 llvm-tools = "0.1"
 walkdir = "*"
+bolt-libelf = { git = "https://github.com/bolt-os/libelf.git" }
 xtask = { git = "https://github.com/bolt-os/xtask.git" }
 
 [profile.dev]

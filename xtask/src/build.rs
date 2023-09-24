@@ -1,6 +1,12 @@
 use crate::{BuildCtx, SparkBuildOptions};
 use clap::Parser;
-use std::ffi::OsStr;
+use elf::{Elf, SegmentKind};
+use std::{
+    ffi::OsStr,
+    fs::{self, File},
+    io::{Write, Seek, SeekFrom},
+    path::Path,
+};
 use xtask::{concat_paths, process::CommandExt};
 
 #[derive(Parser)]
@@ -80,12 +86,25 @@ pub fn build(ctx: &BuildCtx, options: Options, cmd: BuildCmd) -> anyhow::Result<
 
         // Create a flat binary
         let spark_bin = spark_elf.with_extension("bin");
-        ctx.cmds
-            .objcopy()
-            .args(["-O", "binary"])
-            .args([spark_elf, spark_bin])
-            .execute()?;
+        elf_to_binary(&spark_elf, &spark_bin)?;
     }
 
+    Ok(())
+}
+
+/// Generate a flat binary from an ELF executable
+///
+/// This function assumes that the ELF file was linked to `0x0`.
+fn elf_to_binary(elf_path: &Path, bin_path: &Path) -> anyhow::Result<()> {
+    let file_data = fs::read(elf_path)?;
+    let elf = Elf::new(&file_data).unwrap();
+    let mut out = File::create(bin_path)?;
+    for sgmt in elf
+        .segments()
+        .filter(|sgmt| sgmt.kind() == SegmentKind::Load)
+    {
+        out.seek(SeekFrom::Start(sgmt.virtual_address()))?;
+        out.write_all(sgmt.file_data())?;
+    }
     Ok(())
 }

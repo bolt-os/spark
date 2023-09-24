@@ -91,7 +91,6 @@ macro_rules! common_cmds {
 
 common_cmds! {
     cargo;
-    objcopy;
 }
 
 struct CommonPaths {
@@ -105,28 +104,6 @@ pub struct BuildCtx {
     cmds: CommonCmds,
     paths: CommonPaths,
     rust_profile: String,
-}
-
-fn find_objcopy() -> anyhow::Result<PathBuf> {
-    if let Ok(llvm_tools) = llvm_tools::LlvmTools::new() {
-        if let Some(llvm_objcopy) = llvm_tools.tool(&llvm_tools::exe("llvm-objcopy")) {
-            return Ok(llvm_objcopy);
-        }
-    }
-
-    for cmd in ["llvm-objcopy", "riscv64-unknown-elf-objcopy", "objcopy"] {
-        if Command::new(cmd).arg("-V").output()?.status.success() {
-            return Ok(PathBuf::from(cmd));
-        }
-    }
-
-    Err(anyhow::anyhow!(concat!(
-        "Cannot find a usable objcopy.\n",
-        "\n",
-        "Make sure an objcopy which supports the RISC-V architecture is in your PATH.\n",
-        "Optionally, you can instead install the `llvm-tools-preview` component via rustup:\n",
-        "    rustup component add llvm-tools-preview\n",
-    )))
 }
 
 impl BuildCtx {
@@ -159,13 +136,6 @@ impl BuildCtx {
 
         let cmds = CommonCmds {
             cargo: find_command!(cargo, "CARGO", "rustc".into()),
-            objcopy: find_command!(
-                objcopy,
-                "OBJCOPY",
-                find_objcopy()
-                    .unwrap_or_else(|_| "llvm-objcopy".into())
-                    .into_os_string()
-            ),
         };
 
         Ok(Self {
