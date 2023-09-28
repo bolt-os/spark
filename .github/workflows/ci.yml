@@ -41,7 +41,7 @@ jobs:
       - name: deploy build artifacts
         uses: actions/upload-artifact@v3
         with:
-          path: .hdd/
+          path: build/
 
       - name: build the documentation
         run: cargo xtask doc --ci
