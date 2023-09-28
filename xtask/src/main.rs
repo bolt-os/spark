@@ -67,6 +67,10 @@ pub struct SparkBuildOptions {
     #[clap(long)]
     pub cargo: Option<OsString>,
     #[clap(long)]
+    pub rustc: Option<OsString>,
+    #[clap(long)]
+    pub linker: Option<OsString>,
+    #[clap(long)]
     pub objcopy: Option<OsString>,
 }
 
@@ -91,6 +95,8 @@ macro_rules! common_cmds {
 
 common_cmds! {
     cargo;
+    rustc;
+    linker;
 }
 
 struct CommonPaths {
@@ -104,6 +110,7 @@ pub struct BuildCtx {
     cmds: CommonCmds,
     paths: CommonPaths,
     rust_profile: String,
+    rust_target: PathBuf,
 }
 
 impl BuildCtx {
@@ -127,23 +134,66 @@ impl BuildCtx {
 
         macro_rules! find_command {
             ($opt:ident, $env:expr, $def:expr $(,)?) => {
-                opts.$opt
-                    .clone()
-                    .unwrap_or_else(|| env::var_os($env).unwrap_or_else(|| $def))
-                    .into()
+                'b: {
+                    if let Some(cmd) = &opts.$opt {
+                        break 'b cmd.clone();
+                    }
+                    if let Some(cmd) = env::var_os($env) {
+                        break 'b cmd;
+                    }
+                    $def
+                }
             };
         }
 
         let cmds = CommonCmds {
-            cargo: find_command!(cargo, "CARGO", "rustc".into()),
+            cargo: find_command!(cargo, "CARGO", "cargo".into()),
+            rustc: find_command!(rustc, "RUSTC", "rustc".into()),
+            linker: find_command!(linker, "LD", find_linker()?.into()),
         };
+
+        let rust_target =
+            concat_paths!(paths.spark_dir, "conf", opts.target.triple()).with_extension("json");
 
         Ok(Self {
             cmds,
             paths,
             rust_profile: rust_profile.to_string(),
+            rust_target,
         })
     }
+}
+
+fn check_linker(cmd: &str) -> anyhow::Result<bool> {
+    let output = Command::new(cmd).arg("-V").output()?;
+    output.status.exit_ok()?;
+    let stdout = String::from_utf8(output.stdout)?;
+
+    if stdout.starts_with("LLD")
+        || stdout.contains(" LLD ")
+        || (stdout.starts_with("GNU ld") && stdout.contains("elf64lriscv"))
+    {
+        return Ok(true);
+    }
+
+    Ok(false)
+}
+
+fn find_linker() -> anyhow::Result<PathBuf> {
+    for cmd in ["ld.lld", "riscv64-unknown-elf-ld", "riscv64-elf-ld", "ld"] {
+        match check_linker(cmd) {
+            Ok(true) => return Ok(cmd.into()),
+            Ok(false) => (),
+            Err(error) => {
+                eprintln!("{error}");
+            }
+        }
+    }
+    Err(anyhow::anyhow!(concat!(
+        "Cannot find a suitable linker.\n\
+        Make sure a RISC-V linker is in your PATH, or specify one with `--linker` \
+        or with the `LD` environment variable.",
+    )))
 }
 
 #[derive(Parser)]

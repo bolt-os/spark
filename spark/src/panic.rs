@@ -57,15 +57,9 @@ mod uw {
     }
 }
 
-use core::sync::atomic::{AtomicBool, Ordering};
-
 use crate::hcf;
-use spin::RwLock;
-
-static SPARK_ELF: RwLock<Option<Vec<u8>>> = RwLock::new(None);
-pub unsafe fn register_executable(elf: Vec<u8>) {
-    *SPARK_ELF.write() = Some(elf);
-}
+use core::sync::atomic::{AtomicBool, Ordering};
+use symbol_map::Symbol;
 
 #[inline]
 fn reloc_offset() -> usize {
@@ -76,14 +70,93 @@ fn reloc_offset() -> usize {
     offset
 }
 
+mod symbol_map {
+    use core::ptr;
+    use libsa::extern_sym;
+
+    include!("../raw_symbol_map.rs");
+
+    impl SymbolRaw {
+        pub const fn contains_addr(&self, addr: u64) -> bool {
+            self.addr <= addr && addr < self.addr + self.size
+        }
+    }
+
+    pub struct Symbol {
+        pub name: &'static str,
+        pub addr: u64,
+        pub size: u64,
+    }
+
+    pub struct SymbolMap {
+        symbols: &'static [SymbolRaw],
+        names: &'static str,
+    }
+
+    impl SymbolMap {
+        pub const fn empty() -> SymbolMap {
+            Self {
+                symbols: &[],
+                names: "",
+            }
+        }
+
+        pub fn lookup(&self, addr: u64) -> Option<Symbol> {
+            self.symbols
+                .iter()
+                .find(|sym| sym.contains_addr(addr))
+                .map(|sym| Symbol {
+                    name: &self.names[sym.name as usize..][..sym.name_len as usize],
+                    addr: sym.addr,
+                    size: sym.size,
+                })
+        }
+    }
+
+    // Provide a fallback definition of the symbol map so the first link (without the generated
+    // symbol map) succeeds. We use a `u64` so it will have the proper alignment. A valid
+    // signature in the first 4 bytes is checked before creating a `SymbolMap`, so we don't need
+    // to worry about providing a full `SymbolMapHeader`.
+    #[export_name = "__symbol_map"]
+    #[linkage = "weak"]
+    static _DUMMY_SYMBOL_MAP: u64 = 0;
+
+    pub fn get_symbol_map() -> SymbolMap {
+        unsafe {
+            let ptr = extern_sym!(__symbol_map as u8);
+            if ptr.align_offset(8) != 0 {
+                log::error!("unaligned symbol map: {ptr:p}");
+                return SymbolMap::empty();
+            }
+            let magic = ptr.cast::<[u8; 4]>().read();
+            if magic != MAGIC {
+                log::error!("invalid symbol map: {magic:02x?}");
+                return SymbolMap::empty();
+            }
+            // SAFETY: At this point we can assume the symbol map was properly linked
+            // and it is safe to construct the symbol map without any further checks.
+            let header = &*ptr.cast::<SymbolMapHeader>();
+            let symbols = &*ptr::from_raw_parts::<[SymbolRaw]>(
+                ptr.add(header.symbols_offset as usize).cast(),
+                header.symbols_len as usize,
+            );
+            let names = &*ptr::from_raw_parts::<str>(
+                ptr.add(header.strings_offset as usize).cast(),
+                header.strings_len as usize,
+            );
+            SymbolMap { symbols, names }
+        }
+    }
+}
+
 #[inline(never)]
 fn trace_stack() {
     use unwinding::abi::*;
 
     println!("----- STACK TRACE -----");
 
-    let elf_guard = SPARK_ELF.read();
-    let elf = elf_guard.as_ref().and_then(|data| elf::Elf::new(data).ok());
+    let symbol_map = symbol_map::get_symbol_map();
+
     let mut count = 0usize;
     uw::backtrace(&mut count, move |ctx, count| {
         let ip = _Unwind_GetIP(ctx);
@@ -91,12 +164,8 @@ fn trace_stack() {
 
         print!("{count:4}: {ip:#018x} ({orig_ip:#018x}) -  ");
 
-        if let Some(ref elf) = elf
-            && let Some(symtab) = elf.symbol_table()
-            && let Some(sym) = symtab.find(|sym| sym.contains_addr((ip - reloc_offset()) as _))
-        {
-            let name = rustc_demangle::demangle(sym.name().unwrap_or("<unknown>"));
-            let offset = orig_ip - sym.value() as usize;
+        if let Some(Symbol { name, addr, .. }) = symbol_map.lookup(orig_ip as u64) {
+            let offset = orig_ip - addr as usize;
             println!("{name} + {offset:#x}");
         } else {
             println!("<unknown>");

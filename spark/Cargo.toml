@@ -9,6 +9,11 @@ description = "A 64-bit bootloader for RISC-V"
 readme = "./README.md"
 repository = "https://github.com/bolt-os/spark"
 
+[lib]
+name = "spark"
+path = "src/spark.rs"
+crate-type = ["staticlib"]
+
 [features]
 default = [
     "acpi",
@@ -44,7 +49,6 @@ bolt-libelf = { git = "https://github.com/bolt-os/libelf" }
 fdt = { version = "0.1", optional = true }
 libsa = { git = "https://github.com/bolt-os/libsa" }
 log = "0.4"
-rustc-demangle = "0.1"
 sbi = "0.2"
 spin = "0.9"
 uuid = { version = "1.0", default-features = false }

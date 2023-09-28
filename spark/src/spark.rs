@@ -38,6 +38,7 @@
     asm_const,                          // https://github.com/rust-lang/rust/issues/93332
     get_mut_unchecked,                  // https://github.com/rust-lang/rust/issues/63292
     let_chains,                         // https://github.com/rust-lang/rust/issues/53667
+    linkage,                            // https://github.com/rust-lang/rust/issues/29603
     maybe_uninit_slice,                 // https://github.com/rust-lang/rust/issues/63569
     naked_functions,                    // https://github.com/rust-lang/rust/issues/32408
     never_type,                         // https://github.com/rust-lang/rust/issues/35121
@@ -45,12 +46,14 @@
     offset_of,                          // https://github.com/rust-lang/rust/issues/106655
     pointer_byte_offsets,               // https://github.com/rust-lang/rust/issues/96283
     pointer_is_aligned,                 // https://github.com/rust-lang/rust/issues/96284
+    ptr_metadata,                       // https://github.com/rust-lang/rust/issues/81513
     result_option_inspect,              // https://github.com/rust-lang/rust/issues/91345
     slice_flatten,                      // https://github.com/rust-lang/rust/issues/95629
     slice_ptr_get,                      // https://github.com/rust-lang/rust/issues/74265
     slice_ptr_len,                      // https://github.com/rust-lang/rust/issues/71146
     strict_provenance,                  // https://github.com/rust-lang/rust/issues/95228
     sync_unsafe_cell,                   // https://github.com/rust-lang/rust/issues/95439
+    used_with_arg,
 )]
 #![reexport_test_harness_main = "test_main"]
 #![test_runner(test::runner)]
@@ -209,6 +212,7 @@ pub extern "C" fn spark_main(hartid: usize, dtb_ptr: *mut u8) -> ! {
 
     // Bootstrap memory allocation
     pmm::init_from_fdt(fdt, dtb_ptr);
+    print_fdt(fdt);
 
     // TODO: Probe console devices
 
