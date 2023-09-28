@@ -61,7 +61,7 @@ pub fn build(ctx: &BuildCtx, options: Options, cmd: BuildCmd) -> anyhow::Result<
         .args::<&[_], _>(match cmd {
             BuildCmd::Build => &["build"],
             BuildCmd::Check => &["clippy"],
-            BuildCmd::Doc => &["doc", "--bin", "spark", "--document-private-items"],
+            BuildCmd::Doc => &["doc", "--package", "spark", "--document-private-items"],
         })
         .args(["--profile", &ctx.rust_profile, "--target"])
         .arg(&ctx.rust_target)
