@@ -199,7 +199,7 @@ fn create_symbol_map_blob(elf_path: impl AsRef<Path>) -> anyhow::Result<Box<[u8]
         let hdr_offset = 0;
         let hdr_size = mem::size_of::<SymbolMapHeader>();
         let sym_offset = hdr_offset + hdr_size;
-        let sym_size = mem::size_of_val::<[SymbolRaw]>(&symbols);
+        let sym_size = symbols.len() * mem::size_of::<SymbolRaw>();
         let str_offset = sym_offset + sym_size;
         let str_size = names.len();
 
@@ -209,7 +209,7 @@ fn create_symbol_map_blob(elf_path: impl AsRef<Path>) -> anyhow::Result<Box<[u8]
             magic: MAGIC,
             _reserved: 0,
             symbols_offset: u32::try_from(sym_offset).unwrap(),
-            symbols_len: u32::try_from(sym_size).unwrap(),
+            symbols_len: u32::try_from(symbols.len()).unwrap(),
             strings_offset: u32::try_from(str_offset).unwrap(),
             strings_len: u32::try_from(str_size).unwrap(),
         };
@@ -280,6 +280,8 @@ fn rustc_create_obj_from_bin(
                     .p2align 4
                     {name}:
                     .incbin "{}"
+                    .global {name}_size
+                    .set {name}_size, . - {name}
                     .popsection
                     "#
                 );

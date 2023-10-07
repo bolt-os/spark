@@ -71,7 +71,8 @@ fn reloc_offset() -> usize {
 }
 
 mod symbol_map {
-    use core::ptr;
+    use anyhow::anyhow;
+    use core::slice;
     use libsa::extern_sym;
 
     include!("../raw_symbol_map.rs");
@@ -94,13 +95,6 @@ mod symbol_map {
     }
 
     impl SymbolMap {
-        pub const fn empty() -> SymbolMap {
-            Self {
-                symbols: &[],
-                names: "",
-            }
-        }
-
         pub fn lookup(&self, addr: u64) -> Option<Symbol> {
             self.symbols
                 .iter()
@@ -117,45 +111,59 @@ mod symbol_map {
     // symbol map) succeeds. We use a `u64` so it will have the proper alignment. A valid
     // signature in the first 4 bytes is checked before creating a `SymbolMap`, so we don't need
     // to worry about providing a full `SymbolMapHeader`.
-    #[export_name = "__symbol_map"]
-    #[linkage = "weak"]
-    static _DUMMY_SYMBOL_MAP: u64 = 0;
+    global_asm!(
+        r#"
+        .pushsection .rodata.__dummy_symbol_map,"a",@progbits
+        .weak __symbol_map
+        .weak __symbol_map_size
+        .p2align 3
+        __symbol_map:
+        .4byte 0
+        .popsection
+        "#
+    );
 
-    pub fn get_symbol_map() -> SymbolMap {
+    pub fn get_symbol_map() -> anyhow::Result<SymbolMap> {
         unsafe {
             let ptr = extern_sym!(__symbol_map as u8);
+            let len = extern_sym!(__symbol_map_size).addr();
+
             if ptr.align_offset(8) != 0 {
-                log::error!("unaligned symbol map: {ptr:p}");
-                return SymbolMap::empty();
+                return Err(anyhow!("unaligned symbol map: {ptr:p}"));
             }
+
             let magic = ptr.cast::<[u8; 4]>().read();
             if magic != MAGIC {
-                log::error!("invalid symbol map: {magic:02x?}");
-                return SymbolMap::empty();
+                return Err(anyhow!("invalid symbol map: {magic:02x?}"));
             }
-            // SAFETY: At this point we can assume the symbol map was properly linked
-            // and it is safe to construct the symbol map without any further checks.
-            let header = &*ptr.cast::<SymbolMapHeader>();
-            let symbols = &*ptr::from_raw_parts::<[SymbolRaw]>(
+
+            let header = ptr.cast::<SymbolMapHeader>().read();
+
+            if header.strings_offset as usize + header.strings_len as usize > len {
+                return Err(anyhow!("invalid size: {len}"));
+            }
+
+            let symbols = slice::from_raw_parts(
                 ptr.add(header.symbols_offset as usize).cast(),
                 header.symbols_len as usize,
             );
-            let names = &*ptr::from_raw_parts::<str>(
-                ptr.add(header.strings_offset as usize).cast(),
+            let names = core::str::from_utf8_unchecked(slice::from_raw_parts(
+                ptr.add(header.strings_offset as usize),
                 header.strings_len as usize,
-            );
-            SymbolMap { symbols, names }
+            ));
+
+            Ok(SymbolMap { symbols, names })
         }
     }
 }
 
 #[inline(never)]
-fn trace_stack() {
+pub fn trace_stack() -> anyhow::Result<()> {
     use unwinding::abi::*;
 
     println!("----- STACK TRACE -----");
 
-    let symbol_map = symbol_map::get_symbol_map();
+    let symbol_map = symbol_map::get_symbol_map()?;
 
     let mut count = 0usize;
     uw::backtrace(&mut count, move |ctx, count| {
@@ -176,6 +184,8 @@ fn trace_stack() {
     });
 
     println!("-----------------------");
+
+    Ok(())
 }
 
 #[panic_handler]
@@ -188,7 +198,9 @@ fn rust_panic(info: &core::panic::PanicInfo) -> ! {
         hcf();
     }
 
-    trace_stack();
+    if let Err(error) = trace_stack() {
+        println!("failed to get stack trace: {error}");
+    }
 
     hcf();
 }
