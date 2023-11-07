@@ -42,7 +42,6 @@
     never_type,                         // https://github.com/rust-lang/rust/issues/35121
     new_uninit,                         // https://github.com/rust-lang/rust/issues/63291
     offset_of,                          // https://github.com/rust-lang/rust/issues/106655
-    pointer_byte_offsets,               // https://github.com/rust-lang/rust/issues/96283
     pointer_is_aligned,                 // https://github.com/rust-lang/rust/issues/96284
     ptr_metadata,                       // https://github.com/rust-lang/rust/issues/81513
     result_option_inspect,              // https://github.com/rust-lang/rust/issues/91345
