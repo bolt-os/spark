@@ -4,3 +4,4 @@
  */
 
 pub mod linkset;
+pub mod maybe_static_arc;
