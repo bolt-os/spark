@@ -33,6 +33,7 @@ pub mod block;
 pub mod fdt;
 pub mod fw_cfg;
 pub mod pcie;
+pub mod uart;
 
 #[cfg(sbi)]
 use {::fdt as libfdt, core::mem::size_of, libsa::extern_sym};
