@@ -36,6 +36,8 @@
     prelude_import,
     array_windows,                      // https://github.com/rust-lang/rust/issues/75027
     asm_const,                          // https://github.com/rust-lang/rust/issues/93332
+    const_mut_refs,                     // https://github.com/rust-lang/rust/issues/57349
+    decl_macro,                         // https://github.com/rust-lang/rust/issues/39412
     get_mut_unchecked,                  // https://github.com/rust-lang/rust/issues/63292
     maybe_uninit_slice,                 // https://github.com/rust-lang/rust/issues/63569
     naked_functions,                    // https://github.com/rust-lang/rust/issues/32408
@@ -77,8 +79,9 @@ extern crate alloc;
 #[prelude_import]
 #[allow(unused_imports)]
 use crate::prelude::*;
+#[allow(unused_imports)]
 mod prelude {
-    pub use crate::{print, println};
+    pub use crate::console::{print, println};
     pub use alloc::{
         borrow::ToOwned,
         boxed::Box,
@@ -94,6 +97,7 @@ mod prelude {
 }
 
 mod config;
+mod console;
 mod dev;
 mod fs;
 mod io;
@@ -106,6 +110,7 @@ mod smp;
 mod test;
 mod time;
 mod trap;
+mod util;
 
 pub use anyhow::Result;
 pub use mem::{pmm, vmm};
@@ -209,7 +214,7 @@ pub extern "C" fn spark_main(hartid: usize, dtb_ptr: *mut u8) -> ! {
     // Bootstrap memory allocation
     pmm::init_from_fdt(fdt, dtb_ptr);
 
-    // TODO: Probe console devices
+    console::init();
 
     // Probe the full device tree before we search for a boot partition
     dev::init();
