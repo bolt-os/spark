@@ -34,6 +34,7 @@
 #![feature(
     custom_test_frameworks,
     prelude_import,
+    arbitrary_self_types,               // https://github.com/rust-lang/rust/issues/44874
     array_windows,                      // https://github.com/rust-lang/rust/issues/75027
     asm_const,                          // https://github.com/rust-lang/rust/issues/93332
     const_mut_refs,                     // https://github.com/rust-lang/rust/issues/57349
