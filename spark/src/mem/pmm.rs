@@ -38,72 +38,69 @@ use {
 
 #[cfg(sbi)]
 mod ranges {
+    use core::fmt;
+
     #[derive(Clone, Copy)]
-    pub struct InitRange {
-        /// base physical address
-        base: usize,
-        /// number of pages
-        size: usize,
+    pub struct Range {
+        pub base: usize,
+        pub size: usize,
     }
 
-    impl core::fmt::Debug for InitRange {
-        fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-            f.debug_struct("Range")
-                .field("base", &format_args!("{:#018x}", self.base))
-                .field("size", &format_args!("{:#018x}", self.size))
-                .field("end", &format_args!("{:#018x}", (self.base + self.size)))
-                .finish()
+    impl fmt::Debug for Range {
+        fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+            write!(
+                f,
+                "Range {{ base: {:#x}, size: {:#x}, end: {:#x} }}",
+                self.base,
+                self.size,
+                self.end(),
+            )
         }
     }
 
-    impl InitRange {
-        fn empty() -> InitRange {
-            Self { base: 0, size: 0 }
-        }
-
-        pub fn start(&self) -> usize {
-            self.base
-        }
-
-        pub fn end(&self) -> usize {
+    impl Range {
+        fn end(self) -> usize {
             self.base + self.size
         }
 
-        pub fn is_empty(&self) -> bool {
+        fn is_empty(self) -> bool {
             self.size == 0
         }
 
-        fn overlaps_with(&self, other: &InitRange) -> bool {
-            other.start() <= self.end() && other.end() >= self.start()
+        fn overlaps_with(self, other: Self) -> bool {
+            other.base < self.end() && other.end() > self.base
         }
 
-        fn contains(&self, other: &InitRange) -> bool {
-            self.start() <= other.start() && other.end() <= self.end()
+        fn contains(self, other: Self) -> bool {
+            self.base <= other.base && other.end() <= self.end()
         }
     }
 
-    pub struct InitRanges {
-        pub ranges: [InitRange; Self::MAX_RANGES],
-        pub len: usize,
+    pub struct InitRanges<const MAX_RANGES: usize> {
+        ranges: [Range; MAX_RANGES],
+        len: usize,
+        removed: bool,
     }
 
-    impl InitRanges {
-        const MAX_RANGES: usize = 256;
-
-        pub fn new() -> InitRanges {
-            InitRanges {
-                ranges: [InitRange::empty(); Self::MAX_RANGES],
+    impl<const MAX_RANGES: usize> InitRanges<MAX_RANGES> {
+        pub const fn new() -> InitRanges<MAX_RANGES> {
+            Self {
+                ranges: [Range { base: 0, size: 0 }; MAX_RANGES],
                 len: 0,
+                removed: false,
             }
         }
 
-        pub fn ranges(&self) -> &[InitRange] {
+        pub fn ranges(&self) -> &[Range] {
             &self.ranges[..self.len]
         }
 
-        fn insert_range(&mut self, index: usize, range: InitRange) {
-            assert!(self.len < Self::MAX_RANGES, "too many memory ranges");
+        fn ranges_mut(&mut self) -> &mut [Range] {
+            &mut self.ranges[..self.len]
+        }
 
+        fn insert_range(&mut self, index: usize, range: Range) {
+            assert!(self.len < MAX_RANGES);
             self.ranges.copy_within(index..self.len, index + 1);
             self.ranges[index] = range;
             self.len += 1;
@@ -114,80 +111,95 @@ mod ranges {
             self.len -= 1;
         }
 
+        fn range_overlaps(&self, range: Range) -> bool {
+            self.ranges().iter().any(|r| r.overlaps_with(range))
+        }
+
         pub fn insert(&mut self, base: usize, size: usize) {
-            let insert_range = InitRange { base, size };
+            let range = Range { base, size };
+            let index = self.ranges().partition_point(|r| r.base < range.base);
 
-            assert!(!self
-                .ranges()
-                .iter()
-                .any(|range| range.overlaps_with(&insert_range)));
+            assert!(
+                !self.removed,
+                "cannot insert new ranges after ranges have been removed"
+            );
+            assert!(!self.range_overlaps(range));
 
-            let insertion_point = self
-                .ranges()
-                .partition_point(|range| insert_range.start() < range.start());
-
-            if insertion_point > 0 {
-                let prev = &mut self.ranges[insertion_point - 1];
-                if prev.end() == insert_range.start() {
-                    prev.size += insert_range.size;
+            // Check if we can merge with the previous range.
+            if index > 0 {
+                let prev = &mut self.ranges[index - 1];
+                if prev.end() == range.base {
+                    prev.size += size;
+                    // Check if we've closed a gap.
+                    if index < self.len {
+                        let next = self.ranges[index];
+                        let prev = &mut self.ranges[index - 1];
+                        if prev.end() == next.base {
+                            prev.size += next.size;
+                            self.remove_range(index);
+                        }
+                    }
                     return;
                 }
             }
 
-            if self.len > 0 && insertion_point < self.len - 1 {
-                let next = &mut self.ranges[insertion_point + 1];
-                if insert_range.end() == next.start() {
-                    next.size += insert_range.size;
-                    next.base = insert_range.base;
+            // Check if we can merge with the next range.
+            if index < self.len {
+                let next = &mut self.ranges[index];
+                if range.end() == next.base {
+                    next.base = base;
+                    next.size += size;
+                    // Check if we've closed a gap.
+                    if index > 0 {
+                        let next = *next;
+                        let prev = &mut self.ranges[index - 1];
+                        if prev.end() == next.base {
+                            prev.size += next.size;
+                            self.remove_range(index);
+                        }
+                    }
                     return;
                 }
             }
 
-            assert!(insertion_point < Self::MAX_RANGES, "too many memory ranges");
-
-            println!("insert: {insert_range:?}");
-            self.ranges[insertion_point] = insert_range;
-            self.len += 1;
+            assert!(index < MAX_RANGES, "too many memory ranges");
+            self.insert_range(index, range);
         }
 
         pub fn remove(&mut self, base: usize, size: usize) {
-            let remove_range = InitRange { base, size };
-            println!("remove: {remove_range:?}");
+            let range = Range { base, size };
 
-            let (index, from_range) = self.ranges[..self.len]
+            let (index, from) = self
+                .ranges_mut()
                 .iter_mut()
                 .enumerate()
-                .find(|(_, range)| range.contains(&remove_range))
-                .expect("`remove()` called without previous enclosing `insert()`");
+                .find(|(_, r)| r.contains(range))
+                .expect("`remove()` called on invalid range");
 
-            // Handle the simple case of removing from the front ..
-            if base == from_range.base {
-                from_range.size -= size;
-                from_range.base = base + size;
-                // Remove the entry if it has become empty.
-                if from_range.is_empty() {
-                    self.remove_range(index);
-                }
-                return;
-            }
-            // .. and from the back.
-            if base + size == from_range.end() {
-                from_range.size -= size;
-                // Remove the entry if it has become empty.
-                if from_range.is_empty() {
+            if base == from.base {
+                from.size -= size;
+                from.base = base + size;
+                if from.is_empty() {
                     self.remove_range(index);
                 }
                 return;
             }
 
-            let new_range = InitRange {
-                base: remove_range.end(),
-                size: from_range.end() - remove_range.end(),
+            if range.end() == from.end() {
+                from.size -= size;
+                if from.is_empty() {
+                    self.remove_range(index);
+                }
+                return;
+            }
+
+            let new = Range {
+                base: range.end(),
+                size: from.end() - range.end(),
             };
 
-            from_range.size = remove_range.start() - from_range.start();
-
-            self.insert_range(index + 1, new_range);
+            from.size = range.base - from.base;
+            self.insert_range(index + 1, new);
         }
     }
 }
@@ -588,10 +600,12 @@ pub fn generate_limine_memory_map(vmspace: &mut super::vmm::AddressSpace) -> lim
     }
 }
 
+const MAX_INIT_RANGES: usize = 64;
+
 /// Initialize the physical memory allocator from the information in the Device Tree
 #[cfg(sbi)]
 pub fn init() {
-    let mut init_ranges = ranges::InitRanges::new();
+    let mut init_ranges = ranges::InitRanges::<MAX_INIT_RANGES>::new();
     let mut max_phys_addr = 0;
 
     let fdt = fdt::get_fdt();
@@ -637,9 +651,8 @@ pub fn init() {
 
     // Initialize PMM.
     for range in init_ranges.ranges() {
-        let start = page_align_up!(range.start());
-        let size = page_align_down!(range.end() - 1) - start;
-
-        unsafe { free_frames(start, size / PAGE_SIZE) };
+        let base = page_align_up!(range.base);
+        let size = page_align_down!(range.base + range.size - 1) - base;
+        unsafe { free_frames(base, size / PAGE_SIZE) };
     }
 }
