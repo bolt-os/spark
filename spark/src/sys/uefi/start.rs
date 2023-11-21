@@ -1,7 +1,5 @@
-/*
- * Copyright (c) 2022-2023 xvanc and contributors
- * SPDX-License-Identifier: BSD-3-Clause
- */
+// SPDX-FileCopyrightText:  2022-2023 xvanc and contributors
+// SPDX-License-Identifier: BSD-3-Clause
 
 use crate::{dev, io, sys::fdt, BOOT_HART_ID};
 use core::sync::atomic::Ordering;
