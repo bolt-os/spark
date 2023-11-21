@@ -3,7 +3,9 @@
  * SPDX-License-Identifier: BSD-3-Clause
  */
 
+#[cfg(sbi)]
 mod freelist_allocator;
+#[cfg(sbi)]
 mod init_ranges;
 
 use crate::vmm::PAGE_SIZE;
@@ -17,6 +19,7 @@ use {
     spin::Mutex,
 };
 
+#[cfg(sbi)]
 pub static PHYSMAP: Mutex<FreelistAllocator> = Mutex::new(FreelistAllocator::new());
 pub static MAX_PHYS_ADDR: AtomicUsize = AtomicUsize::new(0);
 
@@ -191,12 +194,10 @@ fn generate_limine_memory_map_impl(vmspace: &mut super::vmm::AddressSpace) -> li
     }
 }
 
-const MAX_INIT_RANGES: usize = 64;
-
 /// Initialize the physical memory allocator from the information in the Device Tree
 #[cfg(sbi)]
 pub fn init() {
-    let mut init_ranges = InitRanges::<MAX_INIT_RANGES>::new();
+    let mut init_ranges = InitRanges::<64>::new();
     let mut max_phys_addr = 0;
 
     let fdt = fdt::get_fdt();

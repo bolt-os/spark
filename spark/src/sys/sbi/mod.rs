@@ -3,6 +3,4 @@
  * SPDX-License-Identifier: BSD-3-Clause
  */
 
-pub mod fdt;
-pub mod sbi;
-pub mod uefi;
+mod start;
