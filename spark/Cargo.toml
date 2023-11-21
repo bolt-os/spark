@@ -59,10 +59,15 @@ rev = "85f7db3"
 features = ["bootloader", "uuid"]
 optional = true
 
+[dependencies.linkset]
+git = "https://github.com/xvanc/linkset.git"
+default-features = false
+features = ["spin"]
+
 [dependencies.unwinding]
 version = "0.2"
 default-features = false
-features = [ "unwinder", "fde-static", "personality", "panic" ]
+features = ["unwinder", "fde-static", "personality", "panic"]
 
 [target.'cfg(uefi)'.dependencies]
 uefi = { git = "https://github.com/bolt-os/uefi", rev = "d1510e3", features = ["limine"] }

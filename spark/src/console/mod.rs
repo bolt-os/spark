@@ -7,7 +7,7 @@ mod sbi;
 
 use crate::{
     dev::{self, fdt, uart},
-    util::{linkset, maybe_static_arc::MaybeStaticArc},
+    util::maybe_static_arc::MaybeStaticArc,
 };
 use ::fdt::node::{FdtNode, NodeProperty};
 use alloc::sync::Arc;
@@ -38,7 +38,7 @@ pub struct Driver {
 linkset::declare!(console_drivers: Driver);
 
 pub macro console_driver($driver:expr) {
-     linkset::entry!(console_drivers: Driver, $driver);
+    linkset::entry!(console_drivers, Driver, $driver);
 }
 
 pub struct Console {
