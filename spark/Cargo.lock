@@ -44,10 +44,34 @@ dependencies = [
 ]
 
 [[package]]
-name = "fdt"
-version = "0.1.5"
+name = "bytemuck"
+version = "1.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "784a4df722dc6267a04af36895398f59d21d07dce47232adf31ec0ff2fa45e67"
+checksum = "374d28ec25809ee0e23827c2ab573d729e293f281dfe393500e7ad618baa61c6"
+dependencies = [
+ "bytemuck_derive",
+]
+
+[[package]]
+name = "bytemuck_derive"
+version = "1.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "965ab7eb5f8f97d2a083c799f3a1b994fc397b2fe2da5d1da1626ce15a39f2b1"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
+]
+
+[[package]]
+name = "fdt"
+version = "0.1.0"
+source = "git+https://github.com/bolt-os/fdt.git#48d175cefcb068901282142469ca26e5042ddca7"
+dependencies = [
+ "anyhow",
+ "bytemuck",
+ "libsa",
+]
 
 [[package]]
 name = "gimli"
@@ -58,7 +82,10 @@ checksum = "6fb8d784f27acf97159b40fc4db5ecd8aa23b9ad5ef69cdd136d3bc80665f0c0"
 [[package]]
 name = "libsa"
 version = "0.1.0"
-source = "git+https://github.com/bolt-os/libsa#94944212c9b0a7deedc6d4522697a7fb27ad388c"
+source = "git+https://github.com/bolt-os/libsa#f54301e79c255807f0a8f938b5a2e8df831bfe1c"
+dependencies = [
+ "bytemuck",
+]
 
 [[package]]
 name = "limine"
@@ -72,7 +99,7 @@ dependencies = [
 [[package]]
 name = "linkset"
 version = "0.1.0"
-source = "git+https://github.com/xvanc/linkset.git#5fb342e3f1ee18009c9e8716d6987f34f6f13507"
+source = "git+https://github.com/xvanc/linkset.git#431c7d424665c4f53ee47f3c9bb1ddfd54503e98"
 dependencies = [
  "spin",
 ]
@@ -92,6 +119,24 @@ name = "log"
 version = "0.4.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b5e6163cb8c49088c2c36f57875e58ccd8c87c7427f7fbd50ea6710b2f3f2e8f"
+
+[[package]]
+name = "proc-macro2"
+version = "1.0.69"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "134c189feb4956b20f6f547d2cf727d4c0fe06722b20a0eec87ed445a97f92da"
+dependencies = [
+ "unicode-ident",
+]
+
+[[package]]
+name = "quote"
+version = "1.0.33"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5267fca4496028628a95160fc423a33e8b2e6af8a5302579e322e4b520293cae"
+dependencies = [
+ "proc-macro2",
+]
 
 [[package]]
 name = "sbi"
@@ -135,6 +180,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "syn"
+version = "2.0.39"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "23e78b90f2fcf45d3e842032ce32e3f2d1545ba6636271dcbf24fa306d87be7a"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "unicode-ident",
+]
+
+[[package]]
 name = "uefi"
 version = "0.1.0"
 source = "git+https://github.com/bolt-os/uefi?rev=d1510e3#d1510e368fba5dd63cf63f810d28137c15ec55b4"
@@ -142,6 +198,12 @@ dependencies = [
  "bitflags 1.3.2",
  "limine",
 ]
+
+[[package]]
+name = "unicode-ident"
+version = "1.0.12"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3354b9ac3fae1ff6755cb6db53683adb661634f67557942dea4facebec0fee4b"
 
 [[package]]
 name = "unwinding"
@@ -154,6 +216,6 @@ dependencies = [
 
 [[package]]
 name = "uuid"
-version = "1.5.0"
+version = "1.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "88ad59a7560b41a70d191093a945f0b87bc1deeda46fb237479708a1d6b6cdfc"
+checksum = "5e395fcf16a7a3d8127ec99782007af141946b4795001f876d54fb0d55978560"

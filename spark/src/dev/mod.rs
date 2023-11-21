@@ -30,13 +30,12 @@
 
 pub mod acpi;
 pub mod block;
-pub mod fdt;
 pub mod fw_cfg;
 pub mod pcie;
 pub mod uart;
 
 #[cfg(sbi)]
-use {::fdt as libfdt, core::mem::size_of, libsa::extern_sym};
+use {crate::sys::fdt, core::mem::size_of, libsa::extern_sym};
 #[cfg(uefi)]
 use {core::fmt, spin::Mutex, uefi::proto::Proto};
 
@@ -45,7 +44,7 @@ pub struct DeviceDriver {
     pub name: &'static str,
     #[cfg(all(sbi, feature = "dev-pcie"))]
     pub probe_pci: Option<fn(&pcie::Device) -> crate::Result<()>>,
-    pub probe_fdt: Option<fn(&libfdt::node::FdtNode) -> crate::Result<()>>,
+    pub probe_fdt: Option<fn(&fdt::Node) -> crate::Result<()>>,
 }
 
 #[cfg(sbi)]
@@ -58,19 +57,15 @@ pub fn device_drivers() -> &'static [DeviceDriver] {
 }
 
 #[cfg(sbi)]
-pub fn match_fdt_node(node: &libfdt::node::FdtNode, matches: &[&str]) -> bool {
-    if let Some(compat) = node.compatible() {
-        compat.all().any(|c| matches.contains(&c))
-    } else {
-        false
-    }
-}
-
-#[cfg(sbi)]
 pub fn init() {
-    let Some(fdt) = fdt::get_fdt() else { return };
+    let fdt = fdt::get_fdt();
     log::debug!("scanning device tree");
-    for node in fdt.all_nodes() {
+
+    let Some(soc_node) = fdt.find_node("/soc") else {
+        log::error!("device tree missing `/soc` node");
+        return;
+    };
+    for node in soc_node.children() {
         for driver in device_drivers() {
             if let Some(init) = driver.probe_fdt {
                 if let Err(error) = init(&node) {
@@ -123,6 +118,7 @@ unsafe impl Send for UefiBlockDevice {}
 unsafe impl Sync for UefiBlockDevice {}
 
 #[cfg(uefi)]
+#[allow(clippy::missing_fields_in_debug)]
 impl fmt::Debug for UefiBlockDevice {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("UefiBlockDevice")

@@ -9,9 +9,8 @@ use crate::{
     time::Timeout,
 };
 use alloc::sync::Arc;
-use anyhow::anyhow;
+use anyhow::{anyhow, Context};
 use core::time::Duration;
-use fdt::node::{FdtNode, NodeProperty};
 
 bitflags::bitflags! {
     #[repr(transparent)]
@@ -216,27 +215,18 @@ console_driver!(console::Driver {
     init: init_fdt,
 });
 
-fn init_fdt(node: &FdtNode) -> crate::Result<Arc<dyn ConsoleBackend>> {
-    let base = node
-        .reg()
-        .and_then(|mut i| i.next())
-        .ok_or(anyhow!("no `reg`"))?
-        .starting_address
-        .cast_mut();
-    let width = node
-        .property("reg-io-width")
-        .and_then(NodeProperty::as_usize)
-        .unwrap_or(1) as u32;
+fn init_fdt(node: &fdt::Node) -> anyhow::Result<Arc<dyn ConsoleBackend>> {
+    println!("{}", node.path());
+    let reg = node.reg_by_index(0)?;
+    let width = node.try_property_as::<u32>("reg-io-width")?.unwrap_or(1);
     let shift = node
-        .property("reg-shift")
-        .and_then(NodeProperty::as_usize)
-        .unwrap_or_default() as u32;
+        .try_property_as::<u32>("reg-shift")?
+        .unwrap_or_default();
     let baud_freq = node
-        .property("clock-frequency")
-        .and_then(NodeProperty::as_usize)
-        .unwrap_or_default() as u32;
+        .try_property_as::<u32>("clock-frequency")?
+        .with_context(|| anyhow!("missing `clock-frequency` property"))?;
 
-    let ba = BusAccess::new(base, width as u8, shift as u8);
+    let ba = BusAccess::new(reg.addr as *mut u8, width as u8, shift as u8);
     let mut uart = Uart::new(ba, baud_freq);
 
     uart.initialize(Baud::B115200)?;

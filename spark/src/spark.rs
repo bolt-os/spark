@@ -55,7 +55,7 @@
 )]
 #![reexport_test_harness_main = "test_main"]
 #![test_runner(test::runner)]
-#![warn(clippy::cargo, clippy::pedantic)]
+#![warn(clippy::pedantic)]
 #![deny(
     clippy::semicolon_if_nothing_returned,
     clippy::debug_assert_with_mut_call
@@ -107,6 +107,7 @@ mod panic;
 mod proto;
 mod rtld;
 mod smp;
+mod sys;
 mod test;
 mod time;
 mod trap;
@@ -117,6 +118,8 @@ pub use mem::{pmm, vmm};
 
 use config::Value;
 use core::sync::atomic::{AtomicUsize, Ordering};
+#[cfg(feature = "fdt")]
+use sys::fdt;
 #[cfg(uefi)]
 use uefi::{
     proto::riscv::RiscvBoot,
@@ -160,6 +163,7 @@ pub extern "C" fn spark_main(image: Handle, system_table: &'static SystemTable) 
     unsafe { uefi::bootstrap(image, system_table) };
 
     io::init();
+    println!();
 
     // Print the address we've been loaded to for easier debugging.
     let image_base: usize;
@@ -188,7 +192,7 @@ pub extern "C" fn spark_main(image: Handle, system_table: &'static SystemTable) 
     }
 
     if let Some(ptr) = config_table.get_table(TableGuid::DEVICE_TREE) {
-        dev::fdt::init(ptr.cast());
+        unsafe { fdt::init(ptr.cast()) };
     }
 
     dev::init();
@@ -207,12 +211,16 @@ pub extern "C" fn spark_main(hartid: usize, dtb_ptr: *mut u8) -> ! {
     BOOT_HART_ID.store(hartid, Ordering::Relaxed);
 
     // Install the Device Tree
-    let fdt = dev::fdt::init(dtb_ptr);
+    let fdt = unsafe { fdt::init(dtb_ptr) };
 
-    // TODO: the platform stuff in `fdt::init()` should be pulled out
+    let Some(timebase_freq) = fdt.property_as::<u32>("/cpus/timebase-frequency") else {
+        log::error!("device tree missing `/cpus/timebase-frequency` property");
+        hcf();
+    };
+    time::init(timebase_freq as u64);
 
     // Bootstrap memory allocation
-    pmm::init_from_fdt(fdt, dtb_ptr);
+    pmm::init();
 
     console::init();
 
@@ -281,7 +289,7 @@ fn main() -> ! {
 #[allow(dead_code)]
 #[cfg(feature = "fdt")]
 fn print_fdt(fdt: &fdt::Fdt) {
-    fn print_fdt_node(node: &fdt::node::FdtNode, depth: &mut usize) {
+    fn print_fdt_node(node: &fdt::Node, depth: &mut usize) {
         (0..*depth).for_each(|_| print!("    "));
         println!("{} {{", node.name);
         *depth += 1;
@@ -289,6 +297,12 @@ fn print_fdt(fdt: &fdt::Fdt) {
             (0..*depth).for_each(|_| print!("    "));
 
             print!("{}", prop.name);
+            if prop.is_empty() {
+                println!(";");
+                continue;
+            }
+            print!(" = ");
+
             match prop.name {
                 //                 "interrupt-map"
                 //                     if node
@@ -317,36 +331,25 @@ fn print_fdt(fdt: &fdt::Fdt) {
                 //                     }
                 //                 }
                 "compatible" => {
-                    println!(
-                        " = {};",
-                        node.compatible()
-                            .unwrap()
-                            .all()
-                            .map(|c| format!("{c:?}"))
-                            .collect::<Vec<_>>()
-                            .join(", ")
-                    );
+                    for (n, s) in prop.string_list().unwrap().enumerate() {
+                        if n > 0 {
+                            print!(", ");
+                        }
+                        print!("{s:?}");
+                    }
+                    println!(";");
                 }
                 "stdout-path" | "riscv,isa" | "status" | "mmu-type" | "model" | "device_type" => {
-                    println!(" = {};", prop.as_str().unwrap());
+                    println!("{};", prop.string().unwrap());
                 }
                 _ => {
-                    if prop.value.is_empty() {
-                        println!(";");
-                        continue;
-                    }
-                    print!(" = <");
-                    let mut first = true;
-                    prop.value.chunks_exact(4).for_each(|c| {
-                        if !first {
-                            print!(" ");
+                    print!("<");
+                    for (n, cell) in prop.as_cell_slice().iter().enumerate() {
+                        if n > 0 {
+                            print!(", ");
                         }
-                        first = false;
-                        print!(
-                            "{:#010x}",
-                            u32::from_be_bytes(<[u8; 4]>::try_from(c).unwrap())
-                        );
-                    });
+                        print!("{cell:#0110x}");
+                    }
                     println!(">;");
                 }
             }
@@ -358,7 +361,7 @@ fn print_fdt(fdt: &fdt::Fdt) {
         (0..*depth).for_each(|_| print!("    "));
         println!("}};");
     }
-    let root = fdt.all_nodes().next().unwrap();
+    let root = fdt.root();
     let mut depth = 0;
     print_fdt_node(&root, &mut depth);
 }

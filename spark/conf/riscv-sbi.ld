@@ -39,4 +39,5 @@ SECTIONS {
     }
     PROVIDE(__ebss = .);
     PROVIDE(__spark_end = .);
+    PROVIDE(__image_size = . - __image_base);
 }

@@ -32,8 +32,7 @@ use crate::vmm::PAGE_SIZE;
 use core::sync::atomic::{AtomicUsize, Ordering};
 #[cfg(sbi)]
 use {
-    crate::{page_align_down, page_align_up, pages_for, size_of},
-    // core::,
+    crate::{page_align_down, page_align_up, pages_for, size_of, sys::fdt},
     libsa::extern_sym,
 };
 
@@ -335,22 +334,22 @@ mod physmap {
         PHYSMAP.lock().insert_region(base, num_frames);
     }
 
-    /// Prints the current list of free physical frames
-    pub fn print() {
-        let physmap = PHYSMAP.lock();
-        let mut region = physmap.head;
-        unsafe {
-            while !region.is_null() {
-                println!(
-                    "  {:#018x} -> {:#018x}, {} pages",
-                    (*region).base,
-                    (*region).end(),
-                    (*region).num_frames
-                );
-                region = (*region).next;
-            }
-        }
-    }
+    // /// Prints the current list of free physical frames
+    // pub fn print() {
+    //     let physmap = PHYSMAP.lock();
+    //     let mut region = physmap.head;
+    //     unsafe {
+    //         while !region.is_null() {
+    //             println!(
+    //                 "  {:#018x} -> {:#018x}, {} pages",
+    //                 (*region).base,
+    //                 (*region).end(),
+    //                 (*region).num_frames
+    //             );
+    //             region = (*region).next;
+    //         }
+    //     }
+    // }
 
     // /// Allocate frames of physical memory aligned to a specific boundary
     // ///
@@ -590,66 +589,54 @@ pub fn generate_limine_memory_map(vmspace: &mut super::vmm::AddressSpace) -> lim
 }
 
 /// Initialize the physical memory allocator from the information in the Device Tree
-#[cfg(all(not(uefi), feature = "fdt"))]
-pub fn init_from_fdt(fdt: &fdt::Fdt, dtb_ptr: *const u8) {
-    let mut initmap = ranges::InitRanges::new();
+#[cfg(sbi)]
+pub fn init() {
+    let mut init_ranges = ranges::InitRanges::new();
     let mut max_phys_addr = 0;
 
-    for node in fdt.find_all_nodes("/memory") {
-        if let Some(regions) = node.reg() {
-            for region in regions {
-                let base = region.starting_address as usize;
-                let size = region.size.unwrap_or_default();
+    let fdt = fdt::get_fdt();
 
-                let end = base + size - 1;
-                if end > max_phys_addr {
-                    max_phys_addr = end;
-                }
-
-                initmap.insert(base, size);
-            }
+    // Add all `/memory*` nodes.
+    for node in fdt
+        .root()
+        .children()
+        .filter(|node| node.name.starts_with("memory"))
+    {
+        for reg in node.reg().into_iter().flatten().filter_map(Result::ok) {
+            let end = reg.addr + reg.size;
+            max_phys_addr = max_phys_addr.max(end as usize);
+            init_ranges.insert(reg.addr as usize, reg.size as usize);
         }
     }
 
     MAX_PHYS_ADDR.store(max_phys_addr, Ordering::Relaxed);
 
-    if let Some(reserved_memory_node) = fdt.find_node("/reserved-memory") {
-        for node in reserved_memory_node.children() {
-            if let Some(regions) = node.reg() {
-                for region in regions {
-                    let base = region.starting_address as usize;
-                    let size = region.size.unwrap_or_default();
-
-                    let end = base + size - 1;
-                    if end > MAX_PHYS_ADDR.load(Ordering::Relaxed) {
-                        MAX_PHYS_ADDR.store(end, Ordering::Relaxed);
-                    }
-
-                    initmap.remove(base, size);
-                }
-            }
+    // Remove all `/reserved-memory` nodes.
+    for node in fdt
+        .find_node("/reserved-memory")
+        .into_iter()
+        .flat_map(|node| node.children())
+    {
+        for reg in node.reg().into_iter().flatten().filter_map(Result::ok) {
+            init_ranges.remove(reg.addr as usize, reg.size as usize);
         }
     }
 
-    for region in fdt.memory_reservations() {
-        let base = region.address() as usize;
-        let size = region.size();
-
-        let end = base + size - 1;
-        if end > MAX_PHYS_ADDR.load(Ordering::Relaxed) {
-            MAX_PHYS_ADDR.store(end, Ordering::Relaxed);
-        }
-
-        initmap.remove(base, size);
+    // Remove all entries in the memory reservation block.
+    for entry in fdt.memory_reservations {
+        init_ranges.remove(entry.addr.get() as usize, entry.size.get() as usize);
     }
 
-    initmap.remove(dtb_ptr as _, fdt.total_size());
+    // Remove the DTB.
+    init_ranges.remove(fdt.as_ptr().addr(), fdt.total_size());
 
-    let spark_start = extern_sym!(__spark_start).addr();
-    let spark_size = extern_sym!(__spark_end).addr() - spark_start;
-    initmap.remove(spark_start, spark_size);
+    // Remove the bootloader itself.
+    let spark_start = extern_sym!(__image_base).addr();
+    let spark_size = extern_sym!(__image_size).addr();
+    init_ranges.remove(spark_start, spark_size);
 
-    for range in initmap.ranges() {
+    // Initialize PMM.
+    for range in init_ranges.ranges() {
         let start = page_align_up!(range.start());
         let size = page_align_down!(range.end() - 1) - start;
 

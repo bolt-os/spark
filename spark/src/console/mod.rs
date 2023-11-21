@@ -5,11 +5,7 @@
 
 mod sbi;
 
-use crate::{
-    dev::{self, fdt, uart},
-    util::maybe_static_arc::MaybeStaticArc,
-};
-use ::fdt::node::{FdtNode, NodeProperty};
+use crate::{dev::uart, sys::fdt, util::maybe_static_arc::MaybeStaticArc};
 use alloc::sync::Arc;
 use core::{fmt, time::Duration};
 use spin::Mutex;
@@ -32,7 +28,7 @@ pub trait ConsoleBackend: Send + Sync {
 pub struct Driver {
     pub name: &'static str,
     pub compatible: &'static [&'static str],
-    pub init: fn(&FdtNode) -> anyhow::Result<Arc<dyn ConsoleBackend>>,
+    pub init: fn(&fdt::Node) -> anyhow::Result<Arc<dyn ConsoleBackend>>,
 }
 
 linkset::declare!(console_drivers: Driver);
@@ -86,22 +82,21 @@ pub macro println {
      },
  }
 
+#[cfg(sbi)]
 pub fn init() {
-    let fdt = fdt::get_fdt().unwrap();
+    let fdt = fdt::get_fdt();
 
     let driver = 'probe: {
         if let Some(node) = fdt
             .find_node("/chosen")
-            .and_then(|node| node.property("stdout-path"))
-            .and_then(NodeProperty::as_str)
-            .map(|path| &path[..path.as_bytes().partition_point(|b| *b != b':')])
+            .and_then(|node| node.property_as::<&str>("stdout-path"))
+            .map(|path| &path[..path.find(':').unwrap_or(path.len())])
             .and_then(|path| fdt.find_node(path))
         {
-            for driver in console_drivers
-                .as_slice()
-                .iter()
-                .filter(|driver| dev::match_fdt_node(&node, driver.compatible))
-            {
+            for driver in console_drivers.as_slice() {
+                if !node.is_compatible_any(driver.compatible) {
+                    continue;
+                }
                 let backend = match (driver.init)(&node) {
                     Ok(backend) => backend,
                     Err(error) => {
@@ -113,20 +108,21 @@ pub fn init() {
             }
         }
 
-        for node in fdt.all_nodes() {
-            let enabled = node
-                .property("status")
-                .and_then(NodeProperty::as_str)
-                .map_or(true, |status| matches!(status, "ok" | "okay"));
-            if !enabled {
+        let Some(nodes) = fdt.find_node("/soc").map(|node| node.children()) else {
+            // No console found.
+            println!("no /soc");
+            return;
+        };
+
+        for node in nodes {
+            if !node.is_enabled() {
                 continue;
             }
 
-            for driver in console_drivers
-                .as_slice()
-                .iter()
-                .filter(|driver| dev::match_fdt_node(&node, driver.compatible))
-            {
+            for driver in console_drivers.as_slice() {
+                if !node.is_compatible_any(driver.compatible) {
+                    continue;
+                }
                 let backend = match (driver.init)(&node) {
                     Ok(backend) => backend,
                     Err(error) => {

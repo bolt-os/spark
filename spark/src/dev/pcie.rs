@@ -31,8 +31,9 @@
 #![cfg(all(sbi, feature = "dev-pcie"))]
 #![allow(clippy::cast_possible_truncation)]
 
+use crate::sys::fdt;
+
 use super::device_drivers;
-use crate::dev::match_fdt_node;
 use anyhow::anyhow;
 use core::{fmt, ops::RangeInclusive};
 use device::DeviceKind;
@@ -488,7 +489,7 @@ fn device_kind(id: DeviceIdent) -> &'static str {
 }
 
 pub struct HostBridge {
-    bus_range: RangeInclusive<u8>,
+    bus_range: BusRange,
     ecam_base: *mut u8,
     ranges: Vec<Range>,
 }
@@ -500,11 +501,11 @@ unsafe impl Sync for HostBridge {}
 
 impl HostBridge {
     fn get_ecam(&self, bus: u8, dev: u8, func: u8) -> Option<Ecam> {
-        if !self.bus_range.contains(&bus) {
+        if !self.bus_range.contains_device(BusAddr { bus, dev, func }) {
             return None;
         }
 
-        let ecam_offset = (((bus - self.bus_range.start()) as usize) << 20)
+        let ecam_offset = (((bus - self.bus_range.start) as usize) << 20)
             | ((dev as usize) << 15)
             | ((func as usize) << 12);
 
@@ -705,18 +706,43 @@ impl DriverCompat {
     }
 }
 
-fn fdt_get_bus_range(node: &fdt::node::FdtNode) -> RangeInclusive<u8> {
-    let Some(property) = node.property("bus-range") else {
-        return 0..=255;
-    };
-    let bus_range = property.value;
+#[derive(Clone, Copy, Debug)]
+struct BusRange {
+    start: u8,
+    end: u8,
+}
 
-    let start_bus = u8::try_from(u32::from_be_bytes(bus_range[..4].try_into().unwrap()))
-        .expect("bus-range value overflows");
-    let end_bus = u8::try_from(u32::from_be_bytes(bus_range[4..].try_into().unwrap()))
-        .expect("bus-range value overflows");
+impl BusRange {
+    fn contains_device(self, addr: BusAddr) -> bool {
+        self.start <= addr.bus && addr.bus <= self.end
+    }
+}
 
-    start_bus..=end_bus
+impl Default for BusRange {
+    fn default() -> Self {
+        Self {
+            start: 0x00,
+            end: 0xff,
+        }
+    }
+}
+
+impl IntoIterator for BusRange {
+    type IntoIter = RangeInclusive<u8>;
+    type Item = u8;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.start..=self.end
+    }
+}
+
+#[cfg(feature = "fdt")]
+impl<'f, 'dtb: 'f> fdt::Parse<'f, 'dtb> for BusRange {
+    fn parse(parser: &mut fdt::PropParser<'f, 'dtb>) -> fdt::Result<Self> {
+        let start = parser.parse::<u32>()? as u8;
+        let end = parser.parse::<u32>()? as u8;
+        Ok(Self { start, end })
+    }
 }
 
 #[used]
@@ -728,20 +754,27 @@ static PCIE_DRIVER: super::DeviceDriver = super::DeviceDriver {
     probe_pci: None,
 };
 
-fn fdt_init(node: &fdt::node::FdtNode) -> crate::Result<()> {
-    if !match_fdt_node(node, &["pci-host-ecam-generic", "pci-host-cam-generic"]) {
+fn fdt_init(node: &fdt::Node) -> crate::Result<()> {
+    if !node.is_compatible_any(&["pci-host-ecam-generic", "pci-host-cam-generic"]) {
         return Ok(());
     }
 
-    let cam_window = node
-        .reg()
-        .and_then(|mut r| r.next())
-        .ok_or_else(|| anyhow!("missing `reg` property"))?;
-    let bus_range = fdt_get_bus_range(node);
-    let ranges = fdt_get_ranges(node).ok_or_else(|| anyhow!("missing `ranges`"))?;
+    let bus_range = node
+        .try_property_as::<BusRange>("bus-range")?
+        .unwrap_or_default();
+    let ranges = node
+        .property_as::<Vec<fdt::prop::Range>>("ranges")
+        .ok_or_else(|| anyhow!("missing `ranges` property"))?
+        .into_iter()
+        .map(Range::from)
+        .collect();
+    let reg = node.reg_by_index(0).map_err(|error| match error {
+        fdt::Error::NotFound => anyhow!("missing `reg` property"),
+        _ => error.into(),
+    })?;
 
     let mut host_bridge = HostBridge {
-        ecam_base: cam_window.starting_address.cast_mut(),
+        ecam_base: reg.addr as *mut u8,
         bus_range,
         ranges,
     };
@@ -769,59 +802,6 @@ fn fdt_parse_cells(data: &[BigEndianU32]) -> u64 {
     data.iter().fold(0, |sum, x| (sum << 32) | x.get() as u64)
 }
 
-fn fdt_get_ranges(node: &fdt::node::FdtNode) -> Option<Vec<Range>> {
-    let prop = node.property("ranges")?;
-
-    let cell_sizes = node.cell_sizes();
-    let pci_cells = cell_sizes.address_cells;
-    let size_cells = cell_sizes.size_cells;
-    // XXX: Might be better to assume 2, since we only support 64-bit?
-    let addr_cells = size_cells;
-
-    // The property should provide at least one range describing Memory Space.
-    if prop.value.len() < pci_cells + addr_cells + size_cells {
-        return None;
-    }
-
-    #[allow(clippy::cast_ptr_alignment)]
-    // SAFETY: Property values in the DTB are always aligned on a cell boundary (4 bytes).
-    let data = unsafe {
-        core::slice::from_raw_parts(
-            prop.value.as_ptr().cast::<BigEndianU32>(),
-            prop.value.len() / 4,
-        )
-    };
-
-    let mut ranges = vec![];
-
-    let chunk_size = pci_cells + addr_cells + size_cells;
-    for chunk in data.chunks(chunk_size) {
-        let phys_hi = chunk[0].get();
-
-        let bus = (phys_hi >> 16) as u8;
-        let dev = ((phys_hi >> 11) & 0x1f) as u8;
-        let func = ((phys_hi >> 8) & 0x7) as u8;
-        let reg = phys_hi as u8;
-
-        let pci_addr = fdt_parse_cells(&chunk[1..][..pci_cells - 1]);
-        let cpu_addr = fdt_parse_cells(&chunk[pci_cells..][..addr_cells]);
-        let cpu_size = fdt_parse_cells(&chunk[pci_cells + addr_cells..][..size_cells]);
-
-        ranges.push(Range {
-            flags: RangeFlags::from_phys_hi(phys_hi),
-            addr_space: AddressSpace::from_phys_hi(phys_hi),
-            dev_addr: (bus, dev, func, reg),
-            pci_addr,
-            cpu_addr,
-            cpu_size,
-            current_position: cpu_addr as usize,
-            remaining_capacity: cpu_size as usize,
-        });
-    }
-
-    Some(ranges)
-}
-
 #[derive(Clone, Debug)]
 struct Range {
     flags: RangeFlags,
@@ -847,6 +827,40 @@ impl Range {
         self.remaining_capacity -= align_offset + size;
 
         Some(base)
+    }
+}
+
+#[cfg(feature = "fdt")]
+impl From<fdt::prop::Range> for Range {
+    fn from(range: fdt::prop::Range) -> Self {
+        let phys_hi = range.child_addr_hi as u32;
+        let bus = (phys_hi >> 16) as u8;
+        let dev = ((phys_hi >> 11) & 0x1f) as u8;
+        let func = ((phys_hi >> 8) & 0x7) as u8;
+        let reg = phys_hi as u8;
+
+        let pci_addr = range.child_addr;
+        let cpu_addr = range.parent_addr;
+        let cpu_size = range.size;
+
+        let addr_space = match phys_hi >> 24 & 0x3 {
+            0b00 => AddressSpace::Config,
+            0b01 => AddressSpace::Io,
+            0b10 => AddressSpace::Memory32,
+            0b11 => AddressSpace::Memory64,
+            _ => unreachable!(),
+        };
+
+        Range {
+            flags: RangeFlags::from_bits_retain((phys_hi >> 24) as u8),
+            addr_space,
+            dev_addr: (bus, dev, func, reg),
+            pci_addr,
+            cpu_addr,
+            cpu_size,
+            current_position: cpu_addr as usize,
+            remaining_capacity: cpu_size as usize,
+        }
     }
 }
 

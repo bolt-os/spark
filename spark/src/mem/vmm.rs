@@ -29,7 +29,6 @@
  */
 
 use crate::{
-    dev::fdt,
     pages_for,
     pmm::{self},
     BOOT_HART_ID,
@@ -455,8 +454,9 @@ impl PageTableEntry {
 ///
 /// This function may panic if the device tree does not contain a node for the BSP or if
 /// the node does not contain an `mmu-type` property.
-fn get_max_paging_mode_fdt(fdt: &::fdt::Fdt) -> PagingMode {
-    use ::fdt::node::NodeProperty;
+#[cfg(feature = "fdt")]
+fn get_max_paging_mode_fdt() -> Option<PagingMode> {
+    use crate::sys::fdt;
 
     let hartid = BOOT_HART_ID.load(Ordering::Relaxed);
 
@@ -464,21 +464,26 @@ fn get_max_paging_mode_fdt(fdt: &::fdt::Fdt) -> PagingMode {
      * Determine the paging mode supported by the BSP, we assumme the
      * other cores we're interested in will support the same.
      */
-    let paging_mode = match fdt
-        .find_all_nodes("/cpus/cpu")
-        .find(|node| node.property("reg").and_then(NodeProperty::as_usize) == Some(hartid))
-        .expect("no matching FDT node for the BSP??")
-        .property("mmu-type")
-        .and_then(NodeProperty::as_str)
-        .expect("BSP has no `mmu-type` property")
-    {
-        "riscv,sv39" => PagingMode::Sv39,
-        "riscv,sv48" => PagingMode::Sv48,
-        "riscv,sv57" => PagingMode::Sv57,
-        _ => panic!("unknown mmu-type"),
+    let fdt = fdt::try_get_fdt()?;
+
+    let Some(bsp_node) = fdt.cpus().find(|node| {
+        matches!(node.reg_by_index(0),
+            Ok(reg) if reg. addr as usize == hartid
+        )
+    }) else {
+        log::error!("can't find `/cpus` node for the bsp");
+        return None;
     };
 
-    paging_mode
+    match bsp_node.try_property_as::<&str>("mmu-type").ok()?? {
+        "riscv,sv39" => Some(PagingMode::Sv39),
+        "riscv,sv48" => Some(PagingMode::Sv48),
+        "riscv,sv57" => Some(PagingMode::Sv57),
+        _ => {
+            log::error!("{}: missing `mmu-type` property", bsp_node.path());
+            None
+        }
+    }
 }
 
 /// Determine the system's maximum paging mode by trial-and-error
@@ -538,8 +543,7 @@ pub fn get_max_paging_mode() -> PagingMode {
     }
 
     #[cfg(feature = "fdt")]
-    if let Some(fdt) = fdt::get_fdt() {
-        let mode = get_max_paging_mode_fdt(fdt);
+    if let Some(mode) = get_max_paging_mode_fdt() {
         MAX_PAGING_MODE.store(mode as _, Ordering::Relaxed);
         return mode;
     }

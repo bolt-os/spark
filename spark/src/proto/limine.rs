@@ -28,9 +28,12 @@
  * SPDX-License-Identifier: BSD-3-Clause
  */
 
+#[cfg(uefi)]
+use crate::dev;
+#[cfg(feature = "fdt")]
+use crate::sys::fdt;
 use crate::{
     config::{Entry, Value},
-    dev,
     fs::File,
     pmm::{self, MAX_PHYS_ADDR},
     rtld::Rtld,
@@ -371,10 +374,10 @@ pub fn main(mut fs: Box<dyn File>, config: &Entry) -> anyhow::Result<!> {
     }
 
     // Device Tree
+    #[cfg(feature = "fdt")]
     if let Some(req) = requests.device_tree {
-        let dtb = dev::fdt::DTB_PTR.load(Ordering::Relaxed);
-        if !dtb.is_null() {
-            let resp = Dtb::new(vmspace.direct_map_ptr_mut(dtb));
+        if let Some(fdt) = fdt::try_get_fdt() {
+            let resp = Dtb::new(vmspace.direct_map_ptr_mut(fdt.as_ptr().cast_mut()));
             unsafe { req.set_response(leak_hhdm(&vmspace, resp)) };
         }
     }

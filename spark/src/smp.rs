@@ -1,4 +1,12 @@
+/*
+ * Copyright (c) 2022-2023 xvanc and contributors
+ * SPDX-License-Identifier: BSD-3-Clause
+ */
+
+#[cfg(uefi)]
 use crate::dev;
+#[cfg(feature = "fdt")]
+use crate::sys::fdt;
 
 pub struct Cpu {
     pub hartid: usize,
@@ -26,14 +34,18 @@ pub fn cpus() -> Vec<Cpu> {
     }
 
     #[cfg(feature = "fdt")]
-    if let Some(fdt) = dev::fdt::get_fdt() {
-        return fdt
-            .cpus()
-            .map(|cpu| Cpu {
-                hartid: cpu.ids().first(),
+    if let Some(fdt) = fdt::try_get_fdt() {
+        let mut cpus = vec![];
+        for node in fdt.cpus() {
+            let Ok(reg) = node.reg_by_index(0) else {
+                continue;
+            };
+            cpus.push(Cpu {
+                hartid: reg.addr as _,
                 processor_uid: 0,
-            })
-            .collect();
+            });
+        }
+        return cpus;
     }
 
     panic!();
