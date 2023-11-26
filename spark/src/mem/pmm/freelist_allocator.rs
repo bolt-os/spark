@@ -85,7 +85,6 @@ impl FreelistAllocator {
             (*next).prev = prev;
         }
         self.len -= 1;
-        println!("dec to {}", self.len);
     }
 
     // Link a tag.
@@ -106,7 +105,6 @@ impl FreelistAllocator {
     unsafe fn insert_tag(&mut self, tag: *mut Tag, prev: *mut Tag, next: *mut Tag) {
         self.link_tag(tag, prev, next);
         self.len += 1;
-        println!("inc to {}", self.len);
     }
 
     // Insert (add/deallocate) a region.

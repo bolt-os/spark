@@ -214,7 +214,6 @@ console_driver!(console::Driver {
 });
 
 fn init_fdt(node: &fdt::Node) -> anyhow::Result<Arc<dyn ConsoleBackend>> {
-    println!("{}", node.path());
     let reg = node.reg_by_index(0)?;
     let width = node.try_property_as::<u32>("reg-io-width")?.unwrap_or(1);
     let shift = node
