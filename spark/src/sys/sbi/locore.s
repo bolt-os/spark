@@ -26,16 +26,6 @@ _start:
         csrw            stvec, t0
 
         /*
-         * Initialize the FPU.
-         */
-        li              t0, ~(3 << 13)  // clear sstatus.FS
-        csrc            sstatus, t0
-        li              t0, 1 << 13     // sstatus.FS = initial
-        csrs            sstatus, t0
-        li              t0, 1 << 5      // fcsr.frm = rtz
-        csrw            fcsr, t0
-
-        /*
          * Clear the .bss segment.
          *
          * The linker script ensures __bss is properly aligned, and the size is at least
@@ -83,19 +73,10 @@ error:
     .endif
 .endm
 
-.macro STORE_FP_REG reg
-        fsd     f\reg, (8 * (32 + \reg))(sp)
-.endm
-
-.macro LOAD_FP_REG reg
-        fld     f\reg, (8 * (32 + \reg))(sp)
-.endm
-
 .macro STORE_REGS
 .set reg, 0
 .rept 32
         STORE_GP_REG    %reg
-        STORE_FP_REG    %reg
 .set reg, reg + 1
 .endr
 .endm
@@ -104,7 +85,6 @@ error:
 .set reg, 0
 .rept 32
         LOAD_GP_REG    %reg
-        LOAD_FP_REG    %reg
 .set reg, reg + 1
 .endr
 .endm
