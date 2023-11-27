@@ -71,6 +71,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "bytemuck"
+version = "1.14.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "374d28ec25809ee0e23827c2ab573d729e293f281dfe393500e7ad618baa61c6"
+dependencies = [
+ "bytemuck_derive",
+]
+
+[[package]]
+name = "bytemuck_derive"
+version = "1.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "965ab7eb5f8f97d2a083c799f3a1b994fc397b2fe2da5d1da1626ce15a39f2b1"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
+]
+
+[[package]]
 name = "clap"
 version = "4.4.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -123,6 +143,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "95505c38b4572b2d910cecb0281560f54b440a19336cbbcb27bf6ce6adc6f5a8"
 
 [[package]]
+name = "libsa"
+version = "0.1.0"
+source = "git+https://github.com/bolt-os/libsa.git#f54301e79c255807f0a8f938b5a2e8df831bfe1c"
+dependencies = [
+ "bytemuck",
+]
+
+[[package]]
 name = "proc-macro2"
 version = "1.0.67"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -163,6 +191,7 @@ dependencies = [
  "bolt-libelf",
  "clap",
  "rustc-demangle",
+ "symbol_map",
  "walkdir",
  "xtask",
 ]
@@ -172,6 +201,16 @@ name = "strsim"
 version = "0.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "73473c0e59e6d5812c5dfe2a064a6444949f089e20eec9a2e5506596494e4623"
+
+[[package]]
+name = "symbol_map"
+version = "0.1.0"
+dependencies = [
+ "bolt-libelf",
+ "bytemuck",
+ "libsa",
+ "rustc-demangle",
+]
 
 [[package]]
 name = "syn"

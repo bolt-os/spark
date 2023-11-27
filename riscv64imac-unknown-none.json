@@ -1,0 +1,25 @@
+{
+    "arch": "riscv64",
+    "code-model": "medium",
+    "cpu": "generic-rv64",
+    "crt-objects-fallback": "false",
+    "data-layout": "e-m:e-p:64:64-i64:64-i128:128-n32:64-S128",
+    "features": "+m,+a,+c",
+    "linker": "rust-lld",
+    "linker-flavor": "ld.lld",
+    "llvm-abiname": "lp64",
+    "llvm-target": "riscv64-unknown-unknown",
+    "max-atomic-width": "64",
+    "panic-strategy": "abort",
+    "position-independent-executables": true,
+    "relro-level": "full",
+    "stack-probes": {
+        "kind": "call"
+    },
+    "supported-sanitizers": [
+        "kernel-address"
+    ],
+    "relocation-model": "pie",
+    "static-position-independent-executables": true,
+    "target-pointer-width": "64"
+}

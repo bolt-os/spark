@@ -4,12 +4,10 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-anyhow = "1.0"
-clap = { version = "*", features = ["derive"] }
-walkdir = "*"
+anyhow = "1.0.75"
 bolt-libelf = { git = "https://github.com/bolt-os/libelf.git" }
-rustc-demangle = "0.1"
+clap = { version = "*", features = ["derive"] }
+rustc-demangle = "0.1.23"
+symbol_map = { path = "../symbol_map", features = ["xtask"] }
+walkdir = "*"
 xtask = { git = "https://github.com/bolt-os/xtask.git" }
-
-[profile.dev]
-debug = false

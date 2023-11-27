@@ -31,8 +31,13 @@ mod uw {
 }
 
 use crate::hcf;
-use core::sync::atomic::{AtomicBool, Ordering};
-use symbol_map::Symbol;
+use anyhow::anyhow;
+use core::{
+    ptr,
+    sync::atomic::{AtomicBool, Ordering},
+};
+use libsa::extern_sym;
+use symbol_map::{Symbol, SymbolMap};
 
 #[inline]
 fn reloc_offset() -> usize {
@@ -43,49 +48,12 @@ fn reloc_offset() -> usize {
     offset
 }
 
-mod symbol_map {
-    use anyhow::anyhow;
-    use core::slice;
-    use libsa::extern_sym;
-
-    include!("../raw_symbol_map.rs");
-
-    impl SymbolRaw {
-        pub const fn contains_addr(&self, addr: u64) -> bool {
-            self.addr <= addr && addr < self.addr + self.size
-        }
-    }
-
-    pub struct Symbol {
-        pub name: &'static str,
-        pub addr: u64,
-        pub size: u64,
-    }
-
-    pub struct SymbolMap {
-        symbols: &'static [SymbolRaw],
-        names: &'static str,
-    }
-
-    impl SymbolMap {
-        pub fn lookup(&self, addr: u64) -> Option<Symbol> {
-            self.symbols
-                .iter()
-                .find(|sym| sym.contains_addr(addr))
-                .map(|sym| Symbol {
-                    name: &self.names[sym.name as usize..][..sym.name_len as usize],
-                    addr: sym.addr,
-                    size: sym.size,
-                })
-        }
-    }
-
-    // Provide a fallback definition of the symbol map so the first link (without the generated
-    // symbol map) succeeds. We use a `u64` so it will have the proper alignment. A valid
-    // signature in the first 4 bytes is checked before creating a `SymbolMap`, so we don't need
-    // to worry about providing a full `SymbolMapHeader`.
-    global_asm!(
-        r#"
+// Provide a fallback definition of the symbol map so the first link (without the generated
+// symbol map) succeeds. We use a `u64` so it will have the proper alignment. A valid
+// signature in the first 4 bytes is checked before creating a `SymbolMap`, so we don't need
+// to worry about providing a full `SymbolMapHeader`.
+global_asm!(
+    r#"
         .pushsection .rodata.__dummy_symbol_map,"a",@progbits
         .weak __symbol_map
         .weak __symbol_map_size
@@ -94,39 +62,14 @@ mod symbol_map {
         .4byte 0
         .popsection
         "#
-    );
+);
 
-    pub fn get_symbol_map() -> anyhow::Result<SymbolMap> {
-        unsafe {
-            let ptr = extern_sym!(__symbol_map as u8);
-            let len = extern_sym!(__symbol_map_size).addr();
-
-            if ptr.align_offset(8) != 0 {
-                return Err(anyhow!("unaligned symbol map: {ptr:p}"));
-            }
-
-            let magic = ptr.cast::<[u8; 4]>().read();
-            if magic != MAGIC {
-                return Err(anyhow!("invalid symbol map: {magic:02x?}"));
-            }
-
-            let header = ptr.cast::<SymbolMapHeader>().read();
-
-            if header.strings_offset as usize + header.strings_len as usize > len {
-                return Err(anyhow!("invalid size: {len}"));
-            }
-
-            let symbols = slice::from_raw_parts(
-                ptr.add(header.symbols_offset as usize).cast(),
-                header.symbols_len as usize,
-            );
-            let names = core::str::from_utf8_unchecked(slice::from_raw_parts(
-                ptr.add(header.strings_offset as usize),
-                header.strings_len as usize,
-            ));
-
-            Ok(SymbolMap { symbols, names })
-        }
+fn get_symbol_map() -> Result<SymbolMap<'static>, &'static str> {
+    unsafe {
+        let ptr = extern_sym!(__symbol_map as u8);
+        let len = extern_sym!(__symbol_map_size).addr();
+        let bytes = &*ptr::slice_from_raw_parts(ptr, len);
+        SymbolMap::new(bytes)
     }
 }
 
@@ -136,7 +79,7 @@ pub fn trace_stack() -> anyhow::Result<()> {
 
     println!("----- STACK TRACE -----");
 
-    let symbol_map = symbol_map::get_symbol_map()?;
+    let symbol_map = get_symbol_map().map_err(|err| anyhow!("failed to get symbol map: {err}"))?;
 
     let mut count = 0usize;
     uw::backtrace(&mut count, move |ctx, count| {

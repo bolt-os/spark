@@ -75,9 +75,9 @@ dependencies = [
 
 [[package]]
 name = "gimli"
-version = "0.28.0"
+version = "0.28.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6fb8d784f27acf97159b40fc4db5ecd8aa23b9ad5ef69cdd136d3bc80665f0c0"
+checksum = "4271d37baee1b8c7e4b708028c57d816cf9d2434acb33a549475f78c181f6253"
 
 [[package]]
 name = "libsa"
@@ -165,6 +165,7 @@ dependencies = [
  "log",
  "sbi",
  "spin",
+ "symbol_map",
  "uefi",
  "unwinding",
  "uuid",
@@ -177,6 +178,13 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6980e8d7511241f8acf4aebddbb1ff938df5eebe98691418c4468d0b72a96a67"
 dependencies = [
  "lock_api",
+]
+
+[[package]]
+name = "symbol_map"
+version = "0.1.0"
+dependencies = [
+ "libsa",
 ]
 
 [[package]]
