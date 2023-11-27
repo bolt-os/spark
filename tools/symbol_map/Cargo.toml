@@ -1,0 +1,15 @@
+[package]
+name = "symbol_map"
+version = "0.1.0"
+edition = "2021"
+
+[features]
+default = []
+bytemuck = ["dep:bytemuck", "libsa/bytemuck"]
+xtask = ["bytemuck", "dep:bolt-libelf", "dep:rustc-demangle"]
+
+[dependencies]
+bytemuck = { version = "1.14.0", optional = true, features = ["derive"] }
+bolt-libelf = { git = "https://github.com/bolt-os/libelf.git", optional = true }
+libsa = { git = "https://github.com/bolt-os/libsa.git" }
+rustc-demangle = { version = "0.1.23", optional = true }
